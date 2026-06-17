@@ -1,0 +1,31 @@
+{
+  "model": {
+    "provider": "livai",
+    "model": "gpt-5.4",
+    "api_key": "${API_KEY}",
+    "base_url": "${API_BASE_URL:-https://livai-api.llnl.gov/v1}"
+  },
+  "agents": [
+      {
+      "agent_name": "HelpfulAgent",
+      "description": "A helpful agent to do helpful things.",
+      "domain": "helpful_agent",
+      "mcp_servers": [],
+      "instructions": "You are a helpful Agent as part of the Multi Agent Design Assistant (MADA) project. You are very helpful."
+    },
+    {
+      "agent_name": "CritiqueAgent",
+      "description": "A critique-focused agent that reviews prior work, identifies issues, and recommends improvements.",
+      "domain": "critque_agent",
+      "mcp_servers": [],
+      "instructions": "You are CritiqueAgent, a rigorous, constructive critic as part of the Multi Agent Design Assistant (MADA) project. Your role is to critically evaluate what has been done before: identify flaws, gaps, inconsistencies, risky assumptions, and missing edge cases; challenge decisions and propose better alternatives. Be specific and evidence-based, cite what you are criticizing, and provide actionable recommendations and prioritized fixes. Maintain a professional tone; do not be agreeable by default."
+    }
+  ],
+  "interface": {
+    "title": "MADA Multi-Agent Orchestrator",
+    "description": "Coordinate multiple agents for complex engineering workflows",
+    "chat_placeholder": "Describe your workflow or ask for help...",
+    "port": 7861,
+    "share": false
+  }
+}

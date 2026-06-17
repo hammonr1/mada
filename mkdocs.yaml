@@ -1,0 +1,102 @@
+site_name: MADA
+site_dir: public
+
+nav:
+  - MADA: "index.md"
+  - User Guide:
+    - User Guide Overview: "user_guide/index.md"
+    - Installation: "user_guide/installation.md"
+    - Configuration: "user_guide/configuration.md"
+    - Model Configuration:
+      - Model Configuration Overview: "user_guide/models/index.md"
+      - OpenAI Model Configuration: "user_guide/models/openai.md"
+      - LivAI Model Configuration: "user_guide/models/livai.md"
+      - AWS Bedrock Model Configuration: "user_guide/models/bedrock.md"
+    - Using MADA:
+      - Using Overview: "user_guide/usage/index.md"
+      - CLI Mode: "user_guide/usage/cli.md"
+      - Gradio Mode: "user_guide/usage/gradio.md"
+      - OpenAI API Mode: "user_guide/usage/openai-api.md"
+  - Developer Guide:
+    - Developer Guide Overview: "developer_guide/index.md"
+    - Codebase Architecture: "developer_guide/architecture.md"
+    - Testing Guide: "developer_guide/testing.md"
+    - API Reference: "developer_guide/"
+
+exclude_docs: |
+  "README.md"
+
+theme:
+  name: material
+  language: en
+  features:
+    - header.autohide
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.instant
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.annotate
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/toggle-switch-off-outline
+        name: Switch to light mode
+      primary: black
+      accent: deep orange
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to dark mode
+      primary: black
+      accent: deep orange
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - footnotes
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - markdown_grid_tables
+
+plugins:
+  - glightbox
+  - search
+  - codeinclude:
+      title_mode: pymdownx.tabbed
+  - gen-files:
+      scripts:
+      - docs/gen_ref_pages.py
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src/mada]
+          options:
+            docstring_style: google
+  - literate-nav:
+      nav_file: SUMMARY.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/llnl/mada
+      name: MADA on GitHub
+
+copyright: Copyright &copy; 2025 | Lawrence Livermore National Security

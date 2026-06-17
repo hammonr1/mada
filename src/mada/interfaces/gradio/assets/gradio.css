@@ -1,0 +1,29 @@
+#mada-chat-resize-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 10px;
+  cursor: row-resize;
+  background: rgba(128, 128, 128, 0.25);
+}
+
+body.mada-resize-dragging {
+  cursor: row-resize !important;
+  user-select: none;
+}
+
+#mada-chatbot {
+  position: relative;
+  min-height: 240px;
+  padding-bottom: 10px;
+}
+
+#green_btn {
+    background: green !important;
+    color: white !important;
+    border: 1px solid green !important;
+}
+#green_btn:hover {
+    background: darkgreen !important;
+}

@@ -1,0 +1,48 @@
+{
+  "model": {
+    "provider": "openai",
+    "model": "gpt-5",
+    "api_key": "${API_KEY}",
+    "base_url": "${API_BASE_URL:-https://api.openai.com/v1/responses}"
+  },
+  "agents": [
+    {
+      "agent_name": "JobManagementAgent",
+      "description": "Generates parameter samples and executes computational workflows",
+      "domain": "job_management",
+      "mcp_servers": ["flux"],
+      "system_message": "You are a Job Management Agent specialized in parameter generation and job execution. You have access to Flux for executing simulation runs. You handle the complete workflow from parameter generation through job execution."
+    },
+    {
+      "agent_name": "InverseDesignAgent",
+      "description": "Analyzes simulation results and calculates Quality of Interest (QoI)",
+      "domain": "inverse_design", 
+      "mcp_servers": ["professor"],
+      "system_message": "You are an Inverse Design Agent specialized in analyzing simulation results and calculating Quality of Interest (QoI). You have access to Professor for surrogate modeling. Your responsibilities include analyzing completed simulation results, calculating QoI metrics, identifying best designs, and building surrogate models for optimization. You do NOT generate parameters or execute jobs - that is handled by the JobManagementAgent."
+    }
+  ],
+  "mcp_servers": {
+    "flux": {
+      "transport": "streamable-http",
+      "url": "http://localhost:8001/mcp",
+      "description": "Flux workload manager for job execution"
+    },
+    "slurm": {
+      "transport": "streamable-http",
+      "url": "http://localhost:8002/mcp",
+      "description": "SLURM scheduler for job execution"
+    },
+    "professor": {
+      "transport": "streamable-http",
+      "url": "http://localhost:8005/mcp",
+      "description": "Professor surrogate modeling"
+    }
+  },
+  "interface": {
+    "title": "MADA Multi-Agent Orchestrator",
+    "description": "Coordinate multiple agents for complex engineering workflows",
+    "chat_placeholder": "Describe your workflow or ask for help...",
+    "port": 7860,
+    "share": false
+  }
+}

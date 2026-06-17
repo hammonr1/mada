@@ -1,0 +1,58 @@
+{
+  "model": {
+    "provider": "livai",
+    "model": "gpt-5.4",
+    "api_key": "${API_KEY}",
+    "base_url": "${API_BASE_URL:-https://livai-api.llnl.gov/v1}"
+  },
+  "agents": [
+    {
+      "agent_name": "JobManagementAgent",
+      "description": "Executes computational workflows",
+      "domain": "job_management",
+      "mcp_servers": ["flux"],
+      "instructions": [
+        "You are a Job Management Agent specialized in job execution.",
+        "You have access to Flux for executing runs.",
+        "You get the returned json from SimulationAgent tool 'generate_parameter_runs' to start running the simulations.",
+        "Once the SimulationAgent generates parameter runs you can execute the run jobs using the tool 'submit_jobs_async' and the returned json."
+      ]
+    },
+    {
+      "agent_name": "SimulationAgent",
+      "description": "Create simulation parameter runs and analyze results",
+      "domain": "inverse_design",
+      "mcp_servers": ["vertex_cfd"],
+      "instructions": [
+        "You are a Simulation Agent specialized in creating Vertex-CFD parameter runs and analyzing simulation results.",
+        "You have access to Vertex-CFD for parameter run creation and result analysis.",
+        "Your responsibilities include generating Vertex-CFD parameter runs with the tool 'generate_parameter_runs' and analyzing the results with the tool 'post_process_runs'.",
+        "You do NOT execute jobs - that is handled by the JobManagementAgent.",
+        "You pass the returned json from 'generate_parameter_runs' to JobManagementAgent so it can start running the simulations."
+      ]
+    }
+  ],
+  "mcp_servers": {
+    "flux": {
+      "transport": "streamable-http",
+      "url": "http://localhost:8101/mcp",
+      "description": "Flux workload manager for job execution"
+    },
+    "vertex_cfd": {
+      "transport": "streamable-http",
+      "url": "http://localhost:8107/mcp",
+      "description": "Vertex-CFD simulation"
+    }
+  },
+  "interface": {
+    "title": "MADA Multi-Agent Orchestrator",
+    "description": "Coordinate multiple agents for complex engineering workflows",
+    "chat_placeholder": "Describe your workflow or ask for help...",
+    "port": 7860,
+    "share": false,
+    "in_situ_viz": {
+      "sim_server": "vertex_cfd",
+      "update_time": 60
+    }
+  }
+}

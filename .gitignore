@@ -1,0 +1,8 @@
+**/__pycache__
+.env
+*.egg-info/
+**/my_job_*.out
+**/*.core
+venv/
+.jeds/
+livai_models.py
