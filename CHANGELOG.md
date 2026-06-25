@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- `bump_version.py` script for changing version
+- `CHANGELOG` to track changes across releases
 - workflows for running CI
 
 ### Changed
