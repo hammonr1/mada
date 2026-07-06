@@ -95,7 +95,9 @@ def pytest_runtest_setup(item):
         missing = [var for var in env_vars if os.getenv(var) is None]
 
         if missing:
-            pytest.skip(f"Skipping {item.name} because required env var(s) not set: {', '.join(missing)}")
+            pytest.skip(
+                f"Skipping {item.name} because required env var(s) not set: {', '.join(missing)}"
+            )
 
 
 ###################
@@ -147,7 +149,9 @@ def postgres_connection(session_tmp_path: Path, request: pytest.FixtureRequest):
         )
 
     # Ensure allocation-required tests are included if this fixture is used
-    include_alloc_reqd_tests = request.config.getoption("--include-allocation-required", False)
+    include_alloc_reqd_tests = request.config.getoption(
+        "--include-allocation-required", False
+    )
     if not include_alloc_reqd_tests:
         pytest.skip(
             "Test requires allocation; use --include-allocation-required when running tests to enable this test."

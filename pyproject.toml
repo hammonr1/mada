@@ -47,6 +47,8 @@ tests = [
     "pytest",
     "pytest-asyncio",
     "testcontainers",
+    "pre-commit",
+    "ruff",
 ]
 
 # Documentation requirements
