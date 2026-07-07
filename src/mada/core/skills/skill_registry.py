@@ -1,0 +1,280 @@
+"""
+Discovery and indexing for manifest-based SKILL.md skills.
+"""
+
+from dataclasses import dataclass, field
+import mimetypes
+from pathlib import Path
+from typing import Any, Dict, Iterable, List
+
+from .skill_manifest import parse_skill_manifest
+
+
+class SkillRegistryError(Exception):
+    """Raised when manifest-based skill discovery or lookup fails."""
+
+
+@dataclass(frozen=True)
+class DiscoveredSkillResource:
+    """Indexed metadata for one discovered skill resource file."""
+
+    path: str
+    kind: str
+    file_path: Path
+    size_bytes: int
+    media_type: str
+    text_readable: bool
+
+
+@dataclass(frozen=True)
+class DiscoveredSkillScript:
+    """Indexed metadata for one discovered skill script file."""
+
+    path: str
+    runner: str
+    file_path: Path
+
+
+@dataclass(frozen=True)
+class DiscoveredSkill:
+    """Indexed manifest-based skill metadata used for lazy runtime loading."""
+
+    name: str
+    description: str
+    manifest_path: Path
+    root_path: Path
+    license: str = ""
+    compatibility: str = ""
+    allowed_tools: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    resources: Dict[str, DiscoveredSkillResource] = field(default_factory=dict)
+    scripts: Dict[str, DiscoveredSkillScript] = field(default_factory=dict)
+
+
+TEXT_RESOURCE_EXTENSIONS = {
+    ".csv",
+    ".json",
+    ".md",
+    ".rst",
+    ".tsv",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+
+SUPPORTED_SCRIPT_RUNNERS = {
+    ".py": "python",
+    ".sh": "shell",
+}
+
+
+def _is_hidden_path(path: Path) -> bool:
+    return any(part.startswith(".") for part in path.parts)
+
+
+def _is_text_readable(resource_path: Path, media_type: str) -> bool:
+    if resource_path.suffix.lower() in TEXT_RESOURCE_EXTENSIONS:
+        return True
+    return media_type.startswith("text/")
+
+
+def _discover_skill_resources(skill_root: Path) -> Dict[str, DiscoveredSkillResource]:
+    resources: Dict[str, DiscoveredSkillResource] = {}
+
+    for kind in ("references", "assets"):
+        resource_root = skill_root / kind
+        if not resource_root.exists():
+            continue
+        if not resource_root.is_dir():
+            raise SkillRegistryError(
+                f"Skill resource root '{resource_root}' exists but is not a directory."
+            )
+
+        for candidate in sorted(resource_root.rglob("*")):
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+
+            relative_path = candidate.relative_to(skill_root)
+            if _is_hidden_path(relative_path):
+                continue
+
+            normalized_path = relative_path.as_posix()
+            media_type = (
+                mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+            )
+            resources[normalized_path] = DiscoveredSkillResource(
+                path=normalized_path,
+                kind=kind,
+                file_path=candidate.resolve(),
+                size_bytes=candidate.stat().st_size,
+                media_type=media_type,
+                text_readable=_is_text_readable(candidate, media_type),
+            )
+
+    return resources
+
+
+def _discover_skill_scripts(skill_root: Path) -> Dict[str, DiscoveredSkillScript]:
+    scripts: Dict[str, DiscoveredSkillScript] = {}
+    scripts_root = skill_root / "scripts"
+    if not scripts_root.exists():
+        return scripts
+    if not scripts_root.is_dir():
+        raise SkillRegistryError(
+            f"Skill scripts root '{scripts_root}' exists but is not a directory."
+        )
+
+    for candidate in sorted(scripts_root.rglob("*")):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+
+        relative_path = candidate.relative_to(skill_root)
+        if _is_hidden_path(relative_path):
+            continue
+
+        runner = SUPPORTED_SCRIPT_RUNNERS.get(candidate.suffix.lower())
+        if not runner:
+            continue
+
+        normalized_path = relative_path.as_posix()
+        scripts[normalized_path] = DiscoveredSkillScript(
+            path=normalized_path,
+            runner=runner,
+            file_path=candidate.resolve(),
+        )
+
+    return scripts
+
+
+class SkillRegistry:
+    """Registry of manifest-discovered skills keyed by unique skill name."""
+
+    def __init__(self, skills: Iterable[DiscoveredSkill] = ()):
+        self._skills: Dict[str, DiscoveredSkill] = {}
+
+        for skill in skills:
+            if skill.name in self._skills:
+                existing = self._skills[skill.name]
+                raise SkillRegistryError(
+                    f"Duplicate skill name '{skill.name}' discovered at "
+                    f"'{existing.manifest_path}' and '{skill.manifest_path}'."
+                )
+            self._skills[skill.name] = skill
+
+    @classmethod
+    def discover(cls, roots: Iterable[Path]) -> "SkillRegistry":
+        """Discover manifest-based skills under the provided root directories."""
+        discovered: List[DiscoveredSkill] = []
+
+        for root in roots:
+            root_path = Path(root).resolve()
+            if not root_path.exists():
+                raise SkillRegistryError(
+                    f"Skill discovery root '{root_path}' does not exist."
+                )
+            if not root_path.is_dir():
+                raise SkillRegistryError(
+                    f"Skill discovery root '{root_path}' is not a directory."
+                )
+
+            for manifest_path in sorted(root_path.rglob("SKILL.md")):
+                skill_root = manifest_path.parent
+                manifest = parse_skill_manifest(skill_root)
+                discovered.append(
+                    DiscoveredSkill(
+                        name=manifest.name,
+                        description=manifest.description,
+                        manifest_path=manifest.manifest_path,
+                        root_path=manifest.path,
+                        license=manifest.license,
+                        compatibility=manifest.compatibility,
+                        allowed_tools=manifest.allowed_tools,
+                        metadata=manifest.metadata,
+                        resources=_discover_skill_resources(manifest.path),
+                        scripts=_discover_skill_scripts(manifest.path),
+                    )
+                )
+
+        return cls(discovered)
+
+    def list_skills(self) -> List[DiscoveredSkill]:
+        """Return all discovered skills in deterministic name order."""
+        return [self._skills[name] for name in sorted(self._skills)]
+
+    def get_skill(self, name: str) -> DiscoveredSkill:
+        """Return one discovered skill by name."""
+        try:
+            return self._skills[name]
+        except KeyError as exc:
+            available = ", ".join(sorted(self._skills)) or "none"
+            raise SkillRegistryError(
+                f"Skill '{name}' was not found in the registry. Available skills: {available}."
+            ) from exc
+
+    def has_skills(self) -> bool:
+        """Return True when the registry contains at least one skill."""
+        return bool(self._skills)
+
+    def has_skills_for_tool(self, tool_name: str = "load_skill") -> bool:
+        """Return True when at least one discovered skill allows the tool."""
+        return any(
+            self._skill_allows_tool(skill, tool_name) for skill in self._skills.values()
+        )
+
+    def has_resources(self) -> bool:
+        """Return True when at least one discovered skill has indexed resources."""
+        return any(skill.resources for skill in self._skills.values())
+
+    def has_scripts(self) -> bool:
+        """Return True when at least one discovered skill has indexed scripts."""
+        return any(skill.scripts for skill in self._skills.values())
+
+    def has_resources_for_tool(self, tool_name: str = "read_skill_resource") -> bool:
+        """Return True when at least one skill has resources and allows the tool."""
+        return any(
+            skill.resources and self._skill_allows_tool(skill, tool_name)
+            for skill in self._skills.values()
+        )
+
+    def has_scripts_for_tool(self, tool_name: str = "run_skill_script") -> bool:
+        """Return True when at least one skill has scripts and allows the tool."""
+        return any(
+            skill.scripts and self._skill_allows_tool(skill, tool_name)
+            for skill in self._skills.values()
+        )
+
+    def get_resource(
+        self, skill_name: str, resource_path: str
+    ) -> DiscoveredSkillResource:
+        """Return one discovered resource for a skill by normalized relative path."""
+        skill = self.get_skill(skill_name)
+        try:
+            return skill.resources[resource_path]
+        except KeyError as exc:
+            available = ", ".join(sorted(skill.resources)) or "none"
+            raise SkillRegistryError(
+                f"Resource '{resource_path}' was not found for skill '{skill_name}'. "
+                f"Available resources: {available}."
+            ) from exc
+
+    def get_script(self, skill_name: str, script_name: str) -> DiscoveredSkillScript:
+        """Return one discovered script for a skill by normalized relative path."""
+        skill = self.get_skill(skill_name)
+        try:
+            return skill.scripts[script_name]
+        except KeyError as exc:
+            available = ", ".join(sorted(skill.scripts)) or "none"
+            raise SkillRegistryError(
+                f"Script '{script_name}' was not found for skill '{skill_name}'. "
+                f"Available scripts: {available}."
+            ) from exc
+
+    def skill_summaries(self) -> List[str]:
+        """Return compact 'name: description' summaries for prompt advertisement."""
+        return [f"{skill.name}: {skill.description}" for skill in self.list_skills()]
+
+    @staticmethod
+    def _skill_allows_tool(skill: DiscoveredSkill, tool_name: str) -> bool:
+        if not skill.allowed_tools:
+            return True
+        return tool_name in skill.allowed_tools
