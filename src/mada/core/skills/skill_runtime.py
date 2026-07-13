@@ -318,9 +318,9 @@ class SkillRuntime:
             return result
 
         result["status"] = "nonzero_exit"
-        result[
-            "reason"
-        ] = f"Skill script exited with non-zero status {completed.returncode}."
+        result["reason"] = (
+            f"Skill script exited with non-zero status {completed.returncode}."
+        )
         return result
 
     def _build_script_command(
@@ -347,36 +347,36 @@ class SkillRuntime:
         return raw.decode("utf-8", errors="replace"), truncated
 
     def _approve_script(
-      self,
-      request: SkillScriptApprovalRequest,
-  ) -> SkillScriptApprovalDecision:
-      if self.config.auto_approve_skill_scripts:
-          return SkillScriptApprovalDecision(
-              approved=True,
-              reason="Skill script was auto-approved by runtime configuration.",
-          )
+        self,
+        request: SkillScriptApprovalRequest,
+    ) -> SkillScriptApprovalDecision:
+        if self.config.auto_approve_skill_scripts:
+            return SkillScriptApprovalDecision(
+                approved=True,
+                reason="Skill script was auto-approved by runtime configuration.",
+            )
 
-      approval_mode = self._resolve_skill_script_approval_mode(
-          request.skill_name,
-          request.script_name,
-      )
+        approval_mode = self._resolve_skill_script_approval_mode(
+            request.skill_name,
+            request.script_name,
+        )
 
-      if approval_mode == "approve":
-          return SkillScriptApprovalDecision(
-              approved=True,
-              reason=(
-                  f"Skill script '{request.script_name}' for skill "
-                  f"'{request.skill_name}' was auto-approved by skill-specific policy."
-              ),
-          )
+        if approval_mode == "approve":
+            return SkillScriptApprovalDecision(
+                approved=True,
+                reason=(
+                    f"Skill script '{request.script_name}' for skill "
+                    f"'{request.skill_name}' was auto-approved by skill-specific policy."
+                ),
+            )
 
-      if approval_mode == "deny":
-          return SkillScriptApprovalDecision(
-              approved=False,
-              reason=(
-                  f"Skill script '{request.script_name}' for skill "
-                  f"'{request.skill_name}' was denied by skill-specific policy."
-              ),
-          )
+        if approval_mode == "deny":
+            return SkillScriptApprovalDecision(
+                approved=False,
+                reason=(
+                    f"Skill script '{request.script_name}' for skill "
+                    f"'{request.skill_name}' was denied by skill-specific policy."
+                ),
+            )
 
-      return self.script_approver.approve_skill_script(request)
+        return self.script_approver.approve_skill_script(request)
