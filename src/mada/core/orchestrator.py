@@ -181,9 +181,16 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                 LOG.warning(f"Agent {config.agent_name} has no MCP servers configured")
                 continue
 
+        active_specialist_names = {agent.name for agent in orchestrator.specialist_agents}
+        active_participant_configs = [
+            config
+            for config in participant_configs
+            if config.agent_name in active_specialist_names
+        ]
+
         orchestrator.planning_agent = orchestrator._create_planning_agent(
             agent_configs=agent_configs,
-            participant_configs=participant_configs,
+            participant_configs=active_participant_configs,
         )
         orchestrator.session = orchestrator.planning_agent.create_session()
 
