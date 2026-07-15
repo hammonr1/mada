@@ -76,6 +76,7 @@ def run_gradio(config: AppConfig):
         agents=config.agents,
         database_config=config.database,
         mcp_servers=config.mcp_servers,
+        orchestration_config=config.orchestration,
     )
     gradio_interface = MADAMultiAgentGradioInterface(
         config.interface, config.agents, client
@@ -117,6 +118,7 @@ def create_gradio_app(config_path: str) -> gr.Blocks:
         agents=config.agents,
         database_config=config.database,
         mcp_servers=config.mcp_servers,
+        orchestration_config=config.orchestration,
     )
     gradio_interface = MADAMultiAgentGradioInterface(
         config.interface, config.agents, client

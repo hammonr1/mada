@@ -14,7 +14,13 @@ from typing import AsyncGenerator, Dict, List, Tuple
 
 import gradio as gr
 
-from mada.core.config import AgentConfig, DatabaseConfig, MCPServerConfig, ModelConfig
+from mada.core.config import (
+    AgentConfig,
+    DatabaseConfig,
+    MCPServerConfig,
+    ModelConfig,
+    OrchestrationConfig,
+)
 from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
 from mada.interfaces.gradio.utils import create_agent_table, cycle_through_tools
@@ -42,6 +48,7 @@ class MCPGradioClientSession:
         agents: List[AgentConfig],
         database_config: DatabaseConfig,
         mcp_servers: MCPServerConfig = None,
+        orchestration_config: OrchestrationConfig = None,
     ):
         """
         Initialize the MCP client session.
@@ -56,6 +63,7 @@ class MCPGradioClientSession:
         self.orchestrator = None
         self.initialized = False
         self.mcp_servers = mcp_servers or {}
+        self.orchestration_config = orchestration_config or OrchestrationConfig()
         self.session_manager = ChatSessionManager(database_config)
         self.session_bearer_token = None  # Store session bearer token
 
@@ -94,6 +102,7 @@ class MCPGradioClientSession:
                     self.model_config,
                     self.database_config,
                     session_manager=self.session_manager,
+                    orchestration_config=self.orchestration_config,
                     bearer_token=self.session_bearer_token,
                 )
                 # Enter the async context manager (required for proper setup)

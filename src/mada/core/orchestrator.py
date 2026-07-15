@@ -22,7 +22,13 @@ import httpcore
 from agent_framework import Agent, MCPStdioTool, MCPStreamableHTTPTool
 from agent_framework.exceptions import ToolException
 
-from mada.core.config import AgentConfig, DatabaseConfig, ModelConfig, MCPServerConfig
+from mada.core.config import (
+    AgentConfig,
+    DatabaseConfig,
+    ModelConfig,
+    MCPServerConfig,
+    OrchestrationConfig,
+)
 from mada.core.coordinator import MCPAgentManager
 from mada.core.database import ChatSessionManager
 
@@ -33,6 +39,178 @@ except NameError:
 
 
 LOG = logging.getLogger(__name__)
+
+
+class BaseOrchestrationStrategy:
+    """
+    Internal strategy boundary for orchestrator initialization patterns.
+    """
+
+    mode: str = ""
+
+    async def initialize(
+        self,
+        orchestrator: "MADAOrchestrator",
+        agent_configs: List[AgentConfig],
+        mcp_servers: Dict[str, MCPServerConfig] | None = None,
+    ) -> Tuple[str, List[str]]:
+        raise NotImplementedError
+
+
+class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
+    """
+    Planning-agent-plus-`as_tool()` orchestration.
+    """
+
+    mode = "agent-as-tool"
+
+    async def initialize(
+        self,
+        orchestrator: "MADAOrchestrator",
+        agent_configs: List[AgentConfig],
+        mcp_servers: Dict[str, MCPServerConfig] | None = None,
+    ) -> Tuple[str, List[str]]:
+        orchestrator.specialist_agents = []
+        orchestrator._mcp_tool_count = 0
+        all_tools = []
+        failed_servers = []
+        failed_agents = []
+
+        participant_configs = orchestrator.resolve_participant_configs(agent_configs)
+        orchestrator.mcp_servers = mcp_servers or {}
+
+        for config in participant_configs:
+            if not config.agent_name:
+                continue
+
+            if config.mcp_servers and orchestrator.mcp_servers:
+                try:
+                    (
+                        agent,
+                        mcp_tools,
+                        tool_names,
+                        agent_failed_servers,
+                    ) = await orchestrator.connect_agent(config, orchestrator.mcp_servers)
+                    orchestrator.specialist_agents.append(agent)
+                    orchestrator._mcp_tool_count += len(mcp_tools)
+                    all_tools.extend(
+                        [f"{config.agent_name}: {tool}" for tool in tool_names]
+                    )
+
+                    if agent_failed_servers:
+                        for failed_server in agent_failed_servers:
+                            failed_servers.append(
+                                {
+                                    "agent": config.agent_name,
+                                    "server": failed_server["name"],
+                                    "url": failed_server["url"],
+                                    "error": failed_server["error"],
+                                }
+                            )
+
+                    if tool_names:
+                        LOG.info(
+                            f"Connected agent {config.agent_name} with {len(tool_names)} MCP tools"
+                        )
+                    else:
+                        LOG.warning(
+                            f"Agent {config.agent_name} connected but no MCP servers available"
+                        )
+                        if config.mcp_servers:
+                            failed_agents.append(config.agent_name)
+                except BaseExceptionGroup as eg:
+                    LOG.error(
+                        f"Multiple errors connecting agent {config.agent_name} ({len(eg.exceptions)} errors)"
+                    )
+                    failed_agents.append(config.agent_name)
+                    continue
+                except Exception as e:
+                    LOG.error(f"Failed to connect agent {config.agent_name}: {e}")
+                    traceback.print_exc()
+                    failed_agents.append(config.agent_name)
+                    continue
+            elif config.server_path:
+                try:
+                    is_python = config.server_path.endswith(".py")
+                    command = sys.executable if is_python else "node"
+                    args = (
+                        ["-u", config.server_path]
+                        if is_python
+                        else [config.server_path]
+                    )
+                    mcp_tool = MCPStdioTool(
+                        name=f"{config.agent_name}_mcp",
+                        command=command,
+                        args=args,
+                    )
+
+                    mcp_tool = await orchestrator.exit_stack.enter_async_context(mcp_tool)
+
+                    orchestrator._agent_descriptions[config.agent_name] = (
+                        config.description
+                    )
+
+                    agent = await orchestrator.create_chat_agent(
+                        config,
+                        tools=[mcp_tool],
+                    )
+
+                    orchestrator.specialist_agents.append(agent)
+                    orchestrator._mcp_tool_count += 1
+                    all_tools.append(f"{config.agent_name}: {config.server_path}")
+                    LOG.info(
+                        f"Connected legacy agent {config.agent_name} with 1 MCP tool"
+                    )
+                except Exception as e:
+                    LOG.error(
+                        f"Failed to connect legacy agent {config.agent_name}: {e}"
+                    )
+                    continue
+            elif not config.mcp_servers:
+                LOG.info(f"Creating agent {config.agent_name} without MCP tools")
+                try:
+                    orchestrator._agent_descriptions[config.agent_name] = (
+                        config.description
+                    )
+                    agent = await orchestrator.create_chat_agent(config, tools=[])
+                    orchestrator.specialist_agents.append(agent)
+                except Exception as e:
+                    LOG.error(f"Failed to create agent {config.agent_name}: {e}")
+                    continue
+            else:
+                LOG.warning(f"Agent {config.agent_name} has no MCP servers configured")
+                continue
+
+        orchestrator.planning_agent = orchestrator._create_planning_agent(
+            agent_configs=agent_configs,
+            participant_configs=participant_configs,
+        )
+        orchestrator.session = orchestrator.planning_agent.create_session()
+
+        status_parts = []
+        status_parts.append(
+            f"Connection Successful: Orchestrator initialized with {orchestrator._mcp_tool_count} MCP Servers and {len(orchestrator.specialist_agents) + 1} agents"
+        )
+
+        if failed_servers:
+            status_parts.append(
+                f"\nWARNING: {len(failed_servers)} MCP server(s) failed to connect:"
+            )
+            for failed_server in failed_servers:
+                status_parts.append(
+                    f"  • {failed_server['agent']}/{failed_server['server']} at {failed_server['url']}"
+                )
+                status_parts.append(f"    Error: {failed_server['error']}")
+
+        if failed_agents:
+            status_parts.append(
+                f"\nERROR: {len(failed_agents)} agent(s) failed to initialize: {', '.join(failed_agents)}"
+            )
+
+        status = "\n".join(status_parts)
+        LOG.info(status)
+
+        return status, all_tools
 
 
 class MADAOrchestrator(MCPAgentManager):
@@ -57,6 +235,7 @@ class MADAOrchestrator(MCPAgentManager):
         model_config: Optional[ModelConfig] = None,
         database_config: Optional[DatabaseConfig] = None,
         session_manager: ChatSessionManager = None,
+        orchestration_config: Optional[OrchestrationConfig] = None,
         bearer_token: Optional[str] = None,
         timeout: int = 86400,
     ):
@@ -80,10 +259,71 @@ class MADAOrchestrator(MCPAgentManager):
         self.session = None
         self._agent_descriptions = {}
         self._mcp_tool_count = 0
+        self.orchestration = orchestration_config or OrchestrationConfig()
+        self.orchestration_strategy = self._build_orchestration_strategy(
+            self.orchestration.mode
+        )
         # Initialize the database
         self.session_manager = session_manager or ChatSessionManager(database_config)
         # Authentication bearer token
         self.bearer_token = bearer_token
+
+    def _build_orchestration_strategy(self, mode: str) -> BaseOrchestrationStrategy:
+        """
+        Select the internal orchestration strategy for the configured mode.
+
+        Args:
+            mode: Normalized orchestration mode.
+
+        Returns:
+            A concrete orchestration strategy.
+
+        Raises:
+            ValueError: If the mode is not supported.
+        """
+        if mode == AgentAsToolOrchestrationStrategy.mode:
+            return AgentAsToolOrchestrationStrategy()
+
+        raise ValueError(f"unsupported orchestration mode: {mode}")
+
+    def resolve_participant_configs(
+        self, agent_configs: List[AgentConfig]
+    ) -> List[AgentConfig]:
+        """
+        Resolve the specialist agents participating in orchestration.
+
+        Args:
+            agent_configs: All configured agents, including an optional
+                `PlanningAgent`.
+
+        Returns:
+            Ordered list of specialist agent configs to include.
+        """
+        specialist_configs = [
+            config
+            for config in agent_configs
+            if config.agent_name and config.agent_name != "PlanningAgent"
+        ]
+        specialist_by_name = {
+            config.agent_name: config for config in specialist_configs if config.agent_name
+        }
+
+        self.orchestration.validate_participants(
+            [config.agent_name for config in agent_configs if config.agent_name]
+        )
+
+        if self.orchestration.participants is None:
+            return specialist_configs
+
+        resolved_configs = []
+        seen_names = set()
+        for participant_name in self.orchestration.participants:
+            if participant_name in seen_names:
+                continue
+            resolved_configs.append(specialist_by_name[participant_name])
+            seen_names.add(participant_name)
+
+        return resolved_configs
 
     def _get_planning_agent_config(
         self, agent_configs: List[AgentConfig]
@@ -395,7 +635,11 @@ class MADAOrchestrator(MCPAgentManager):
 
         return agent, all_tools, all_tool_names, failed_servers
 
-    def _create_planning_agent(self, agent_configs: List[AgentConfig]) -> Agent:
+    def _create_planning_agent(
+        self,
+        agent_configs: List[AgentConfig],
+        participant_configs: List[AgentConfig],
+    ) -> Agent:
         """
         Create the planning agent that coordinates other agents.
 
@@ -412,7 +656,7 @@ class MADAOrchestrator(MCPAgentManager):
         Returns:
             Planning agent instance with specialist agents exposed as tools.
         """
-        team_description = self._generate_team_description(agent_configs)
+        team_description = self._generate_team_description(participant_configs)
 
         # Convert each specialist agent to a tool using as_tool()
         agent_tools = []
@@ -490,8 +734,12 @@ Guidelines:
             Multiline text describing each configured agent and its role.
         """
         lines = [
-            f"    {agent.agent_name}: {agent.description}" for agent in agent_configs
+            f"    {agent.agent_name}: {agent.description}"
+            for agent in agent_configs
+            if agent.agent_name != "PlanningAgent"
         ]
+        if not lines:
+            return "    (no specialist agents configured)"
         return "\n".join(lines)
 
     async def initialize_orchestrator(
@@ -511,147 +759,11 @@ Guidelines:
             1. A human-readable status message describing the initialized team.
             2. A list of available tool labels in `agent_name: tool_name` format.
         """
-        self.specialist_agents = []
-        self._mcp_tool_count = 0
-        all_tools = []
-        failed_servers = []  # Track failed server connections
-        failed_agents = []  # Track agents that failed to connect
-
-        self.mcp_servers = mcp_servers or {}
-
-        for config in agent_configs:
-            if not config.agent_name:
-                continue
-
-            # skip the PlanningAgent here, it will be created separately
-            if config.agent_name == "PlanningAgent":
-                continue
-
-            if config.mcp_servers and self.mcp_servers:
-                try:
-                    (
-                        agent,
-                        mcp_tools,
-                        tool_names,
-                        agent_failed_servers,
-                    ) = await self.connect_agent(config, self.mcp_servers)
-                    self.specialist_agents.append(agent)
-                    self._mcp_tool_count += len(mcp_tools)
-                    all_tools.extend(
-                        [f"{config.agent_name}: {tool}" for tool in tool_names]
-                    )
-
-                    # Track any failed servers for this agent
-                    if agent_failed_servers:
-                        for fs in agent_failed_servers:
-                            failed_servers.append(
-                                {
-                                    "agent": config.agent_name,
-                                    "server": fs["name"],
-                                    "url": fs["url"],
-                                    "error": fs["error"],
-                                }
-                            )
-
-                    if len(tool_names) > 0:
-                        LOG.info(
-                            f"Connected agent {config.agent_name} with {len(tool_names)} MCP tools"
-                        )
-                    else:
-                        LOG.warning(
-                            f"Agent {config.agent_name} connected but no MCP servers available"
-                        )
-                        if len(config.mcp_servers) > 0:
-                            failed_agents.append(config.agent_name)
-                except BaseExceptionGroup as eg:
-                    LOG.error(
-                        f"Multiple errors connecting agent {config.agent_name} ({len(eg.exceptions)} errors)"
-                    )
-                    failed_agents.append(config.agent_name)
-                    continue
-                except Exception as e:
-                    LOG.error(f"Failed to connect agent {config.agent_name}: {e}")
-                    traceback.print_exc()
-                    failed_agents.append(config.agent_name)
-                    continue
-            elif config.server_path:
-                # Legacy support for single server_path
-                try:
-                    is_python = config.server_path.endswith(".py")
-                    command = sys.executable if is_python else "node"
-                    # Use -u for unbuffered Python output
-                    args = (
-                        ["-u", config.server_path]
-                        if is_python
-                        else [config.server_path]
-                    )
-                    mcp_tool = MCPStdioTool(
-                        name=f"{config.agent_name}_mcp",
-                        command=command,
-                        args=args,
-                    )
-
-                    # Start the MCP server connection
-                    mcp_tool = await self.exit_stack.enter_async_context(mcp_tool)
-
-                    self._agent_descriptions[config.agent_name] = config.description
-
-                    agent = await self.create_chat_agent(
-                        config,
-                        tools=[mcp_tool],
-                    )
-
-                    self.specialist_agents.append(agent)
-                    self._mcp_tool_count += 1
-                    all_tools.append(f"{config.agent_name}: {config.server_path}")
-                    LOG.info(
-                        f"Connected legacy agent {config.agent_name} with 1 MCP tool"
-                    )
-                except Exception as e:
-                    LOG.error(
-                        f"Failed to connect legacy agent {config.agent_name}: {e}"
-                    )
-                    continue
-            elif not config.mcp_servers:
-                LOG.info(f"Creating agent {config.agent_name} without MCP tools")
-                try:
-                    self._agent_descriptions[config.agent_name] = config.description
-                    agent = await self.create_chat_agent(config, tools=[])
-                    self.specialist_agents.append(agent)
-                except Exception as e:
-                    LOG.error(f"Failed to create agent {config.agent_name}: {e}")
-                    continue
-            else:
-                LOG.warning(f"Agent {config.agent_name} has no MCP servers configured")
-                continue
-
-        self.planning_agent = self._create_planning_agent(agent_configs)
-        self.session = self.planning_agent.create_session()
-
-        # Build status message
-        status_parts = []
-        status_parts.append(
-            f"Connection Successful: Orchestrator initialized with {self._mcp_tool_count} MCP Servers and {len(self.specialist_agents) + 1} agents"
+        return await self.orchestration_strategy.initialize(
+            orchestrator=self,
+            agent_configs=agent_configs,
+            mcp_servers=mcp_servers,
         )
-
-        # Report any failed connections
-        if failed_servers:
-            status_parts.append(
-                f"\nWARNING: {len(failed_servers)} MCP server(s) failed to connect:"
-            )
-            for fs in failed_servers:
-                status_parts.append(f"  • {fs['agent']}/{fs['server']} at {fs['url']}")
-                status_parts.append(f"    Error: {fs['error']}")
-
-        if failed_agents:
-            status_parts.append(
-                f"\nERROR: {len(failed_agents)} agent(s) failed to initialize: {', '.join(failed_agents)}"
-            )
-
-        status = "\n".join(status_parts)
-        LOG.info(status)
-
-        return status, all_tools
 
     def _stringify_openai_content(self, content: Any) -> str:
         """

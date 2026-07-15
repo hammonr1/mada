@@ -254,6 +254,7 @@ class MADACLIInterface:
                 model_config=self.config.model,
                 database_config=self.config.database,
                 session_manager=self.session_manager,
+                orchestration_config=self.config.orchestration,
             ) as orchestrator:
                 self.orchestrator = orchestrator
 

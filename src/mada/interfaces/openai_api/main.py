@@ -180,19 +180,22 @@ class MADAOpenAIAPIService:
 
         from mada.core.orchestrator import MADAOrchestrator
 
-        orchestrator = MADAOrchestrator(
-            model_config=self.config.model,
-            database_config=self.config.database,
-            bearer_token=self.bearer_token,
-        )
+        orchestrator = None
         try:
+            orchestrator = MADAOrchestrator(
+                model_config=self.config.model,
+                database_config=self.config.database,
+                orchestration_config=self.config.orchestration,
+                bearer_token=self.bearer_token,
+            )
             await orchestrator.__aenter__()
             await orchestrator.initialize_orchestrator(
                 self.config.agents, self.config.mcp_servers
             )
             self.orchestrator = orchestrator
         except BaseException as exc:
-            await orchestrator.__aexit__(None, None, None)
+            if orchestrator is not None:
+                await orchestrator.__aexit__(None, None, None)
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             raise OrchestratorStartupError(_format_startup_error_message(exc)) from exc
