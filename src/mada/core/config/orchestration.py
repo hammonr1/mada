@@ -48,7 +48,9 @@ class OrchestrationConfig:
             return
 
         if not isinstance(self.participants, list):
-            raise ValueError("'orchestration.participants' must be a list of agent names")
+            raise ValueError(
+                "'orchestration.participants' must be a list of agent names"
+            )
 
         normalized_participants = []
         for participant in self.participants:
@@ -97,7 +99,9 @@ class OrchestrationConfig:
             raise ValueError(f"unknown orchestration participants: {missing}")
 
 
-def load_orchestration_config(config_dict: dict[str, Any] | None) -> OrchestrationConfig:
+def load_orchestration_config(
+    config_dict: dict[str, Any] | None,
+) -> OrchestrationConfig:
     """
     Load orchestration configuration from a dictionary.
 

@@ -90,7 +90,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                         mcp_tools,
                         tool_names,
                         agent_failed_servers,
-                    ) = await orchestrator.connect_agent(config, orchestrator.mcp_servers)
+                    ) = await orchestrator.connect_agent(
+                        config, orchestrator.mcp_servers
+                    )
                     orchestrator.specialist_agents.append(agent)
                     orchestrator._mcp_tool_count += len(mcp_tools)
                     all_tools.extend(
@@ -144,7 +146,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                         args=args,
                     )
 
-                    mcp_tool = await orchestrator.exit_stack.enter_async_context(mcp_tool)
+                    mcp_tool = await orchestrator.exit_stack.enter_async_context(
+                        mcp_tool
+                    )
 
                     orchestrator._agent_descriptions[config.agent_name] = (
                         config.description
@@ -181,7 +185,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                 LOG.warning(f"Agent {config.agent_name} has no MCP servers configured")
                 continue
 
-        active_specialist_names = {agent.name for agent in orchestrator.specialist_agents}
+        active_specialist_names = {
+            agent.name for agent in orchestrator.specialist_agents
+        }
         active_participant_configs = [
             config
             for config in participant_configs
@@ -312,7 +318,9 @@ class MADAOrchestrator(MCPAgentManager):
             if config.agent_name and config.agent_name != "PlanningAgent"
         ]
         specialist_by_name = {
-            config.agent_name: config for config in specialist_configs if config.agent_name
+            config.agent_name: config
+            for config in specialist_configs
+            if config.agent_name
         }
 
         self.orchestration.validate_participants(
