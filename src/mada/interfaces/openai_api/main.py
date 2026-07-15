@@ -47,7 +47,7 @@ except (
 else:
     UVICORN_IMPORT_ERROR = None
 
-from mada.core.config import AppConfig
+from mada.core.config import AppConfig, OrchestrationConfig
 from mada.core import load_config_from_json
 
 if TYPE_CHECKING:
@@ -55,6 +55,10 @@ if TYPE_CHECKING:
 
 
 DEFAULT_MODEL_NAME = "mada"
+
+
+def _get_orchestration_config(config: AppConfig) -> OrchestrationConfig:
+    return getattr(config, "orchestration", None) or OrchestrationConfig()
 
 
 class OrchestratorStartupError(RuntimeError):
@@ -185,7 +189,7 @@ class MADAOpenAIAPIService:
             orchestrator = MADAOrchestrator(
                 model_config=self.config.model,
                 database_config=self.config.database,
-                orchestration_config=self.config.orchestration,
+                orchestration_config=_get_orchestration_config(self.config),
                 bearer_token=self.bearer_token,
             )
             await orchestrator.__aenter__()

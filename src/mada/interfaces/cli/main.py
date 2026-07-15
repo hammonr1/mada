@@ -14,7 +14,7 @@ import sys
 import click
 from typing import Dict, List
 
-from mada.core.config import AppConfig, load_config_from_json
+from mada.core.config import AppConfig, OrchestrationConfig, load_config_from_json
 from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
 
@@ -42,6 +42,10 @@ class MADACLIInterface:
         self.config = config
         self.orchestrator = None
         self.session_manager = ChatSessionManager(config.database)
+
+    @property
+    def orchestration_config(self) -> OrchestrationConfig:
+        return getattr(self.config, "orchestration", None) or OrchestrationConfig()
 
     def _print_history_summary(self, history: List[Dict[str, str]]):
         """
@@ -254,7 +258,7 @@ class MADACLIInterface:
                 model_config=self.config.model,
                 database_config=self.config.database,
                 session_manager=self.session_manager,
-                orchestration_config=self.config.orchestration,
+                orchestration_config=self.orchestration_config,
             ) as orchestrator:
                 self.orchestrator = orchestrator
 
