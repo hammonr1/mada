@@ -19,6 +19,7 @@ from click.testing import CliRunner
 from mada.core.config import (
     MCPServerConfig,
     OpenAIModelConfig,
+    OrchestrationConfig,
     SQLiteConfig,
 )
 from mada.interfaces.cli.main import MADACLIInterface, async_main
@@ -70,6 +71,7 @@ class DummyConfig:
         self.agents = ["a1", "a2"]
         self.mcp_servers = {"s1": MCPServerConfig(transport="stdio")}
         self.database = database
+        self.orchestration = OrchestrationConfig()
 
 
 @pytest.fixture
@@ -356,6 +358,25 @@ class TestMADAGradioCmd:
                 # Should exit with code 1 on unexpected error
                 mock_exit.assert_called_once_with(1)
 
+        def test_gradio_entrypoint_reports_unsupported_orchestration_mode(self):
+            with (
+                patch("mada.interfaces.gradio.main.load_config_from_json") as mock_load,
+                patch("mada.interfaces.gradio.main.sys.exit") as mock_exit,
+                patch("builtins.print") as mock_print,
+            ):
+                mock_load.side_effect = ValueError(
+                    "unsupported orchestration mode: magentic"
+                )
+
+                gradio_entrypoint(port=None, share=False, config_file="config.json")
+
+                mock_exit.assert_called_once_with(1)
+                printed = " ".join(
+                    " ".join(str(arg) for arg in call.args)
+                    for call in mock_print.call_args_list
+                )
+                assert "unsupported orchestration mode: magentic" in printed
+
     class TestRunGradio:
         def test_run_gradio_launches_interface_with_defaults(
             self, create_dummy_config: Callable, db_config: SQLiteConfig
@@ -400,6 +421,7 @@ class TestMADAGradioCmd:
                     agents=["a1", "a2"],
                     database_config=db_config,
                     mcp_servers={"s1": MCPServerConfig(transport="stdio")},
+                    orchestration_config=OrchestrationConfig(),
                 )
                 mock_iface_cls.assert_called_once()
                 mock_iface_instance.create_interface.assert_called_once()
@@ -591,6 +613,34 @@ class TestMADAOpenAIApiCmd:
                 )
 
                 mock_exit.assert_called_once_with(1)
+
+        def test_openai_api_entrypoint_reports_unsupported_orchestration_mode(self):
+            with (
+                patch(
+                    "mada.interfaces.openai_api.main.load_config_from_json"
+                ) as mock_load,
+                patch("mada.interfaces.openai_api.main.sys.exit") as mock_exit,
+                patch("builtins.print") as mock_print,
+            ):
+                mock_load.side_effect = ValueError(
+                    "unsupported orchestration mode: magentic"
+                )
+
+                openai_api_entrypoint(
+                    host="127.0.0.1",
+                    port=8000,
+                    model_name="mada-api",
+                    api_key=None,
+                    bearer_token=None,
+                    config_file="config.json",
+                )
+
+                mock_exit.assert_called_once_with(1)
+                printed = " ".join(
+                    " ".join(str(arg) for arg in call.args)
+                    for call in mock_print.call_args_list
+                )
+                assert "unsupported orchestration mode: magentic" in printed
 
     @pytest.mark.skipif(
         TestClient is None, reason="fastapi test client is not installed"
@@ -849,6 +899,26 @@ class TestMADACLICmd:
                 await async_main("config.json")
 
                 mock_exit.assert_called_once_with(1)
+
+        @pytest.mark.asyncio
+        async def test_async_main_reports_unsupported_orchestration_mode(self):
+            with (
+                patch("mada.interfaces.cli.main.load_config_from_json") as mock_load,
+                patch("mada.interfaces.cli.main.sys.exit") as mock_exit,
+                patch("builtins.print") as mock_print,
+            ):
+                mock_load.side_effect = ValueError(
+                    "unsupported orchestration mode: magentic"
+                )
+
+                await async_main("config.json")
+
+                mock_exit.assert_called_once_with(1)
+                printed = " ".join(
+                    " ".join(str(arg) for arg in call.args)
+                    for call in mock_print.call_args_list
+                )
+                assert "unsupported orchestration mode: magentic" in printed
 
     class TestMADACLIInterface:
         @pytest.mark.asyncio
