@@ -10,7 +10,7 @@ for the Gradio interface, adapted to work with MADA's architecture.
 
 import logging
 import traceback
-from typing import AsyncGenerator, Dict, List, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Tuple
 
 import gradio as gr
 
@@ -18,6 +18,7 @@ from mada.core.config import AgentConfig, DatabaseConfig, MCPServerConfig, Model
 from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
 from mada.interfaces.gradio.utils import create_agent_table, cycle_through_tools
+from mada.core.skills.skill_registry import SkillRegistry
 
 try:
     BaseExceptionGroup
@@ -42,6 +43,8 @@ class MCPGradioClientSession:
         agents: List[AgentConfig],
         database_config: DatabaseConfig,
         mcp_servers: MCPServerConfig = None,
+        skill_registry: SkillRegistry = None,
+        skill_tools: List[Any] = None,
     ):
         """
         Initialize the MCP client session.
@@ -58,6 +61,8 @@ class MCPGradioClientSession:
         self.mcp_servers = mcp_servers or {}
         self.session_manager = ChatSessionManager(database_config)
         self.session_bearer_token = None  # Store session bearer token
+        self.skill_registry = skill_registry or SkillRegistry()
+        self.skill_tools = list(skill_tools or [])
 
     async def connect_servers(
         self, agent_table: gr.Dataframe, request: gr.Request
@@ -94,6 +99,8 @@ class MCPGradioClientSession:
                     self.model_config,
                     self.database_config,
                     session_manager=self.session_manager,
+                    skill_registry=self.skill_registry,
+                    skill_tools=self.skill_tools,
                     bearer_token=self.session_bearer_token,
                 )
                 # Enter the async context manager (required for proper setup)

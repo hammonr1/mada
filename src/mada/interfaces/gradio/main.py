@@ -15,11 +15,21 @@ import os
 import importlib.resources
 
 import click
+from pathlib import Path
 import gradio as gr
 
 from mada.core.config import AppConfig, load_config_from_json
 from mada.interfaces.gradio.interface import MADAMultiAgentGradioInterface
 from mada.interfaces.gradio.mcp_client_wrapper import MCPGradioClientSession
+
+from mada.core.skill.skill_registry import SkillRegistry
+from mada.core.skill.skill_runtime import SkillRuntime
+from mada.core.skill.skill_tools import (
+    build_load_skill_tool,
+    build_read_skill_resource_tool,
+    build_run_skill_script_tool,
+)
+from mada.interfaces.gradio.skill_approval import GradioPolicySkillScriptApprover
 
 
 def _load_asset_text(filename: str) -> str:
@@ -60,7 +70,50 @@ def setup_logging():
     print(f"Logging configured at {log_level} level")
 
 
-def run_gradio(config: AppConfig):
+def _resolve_skill_paths(skill_paths: list[str], config_file: str) -> list[Path]:
+    """
+    Resolve configured skill discovery roots relative to the config file path.
+    """
+    config_dir = Path(config_file).resolve().parent
+    resolved_paths = []
+
+    for raw_path in skill_paths:
+        skill_path = Path(raw_path)
+        if not skill_path.is_absolute():
+            skill_path = config_dir / skill_path
+        resolved_paths.append(skill_path.resolve())
+
+    return resolved_paths
+
+
+def _initialize_skill_state(config: AppConfig, config_file: str):
+    """
+    Discover manifest-based skills and build runtime tools for the UI.
+    """
+    resolved_skill_paths = _resolve_skill_paths(config.skill_paths, config_file)
+    skill_registry = SkillRegistry.discover(resolved_skill_paths)
+    skill_runtime = SkillRuntime(
+        skill_registry,
+        config=config.skill_runtime_config,
+        script_approver=GradioPolicySkillScriptApprover(),
+    )
+
+    skill_tools = []
+    if skill_registry.has_skills_for_tool("load_skill"):
+        skill_tools.append(build_load_skill_tool(skill_runtime))
+    if skill_registry.has_resources_for_tool("read_skill_resource"):
+        skill_tools.append(build_read_skill_resource_tool(skill_runtime))
+    if skill_registry.has_scripts_for_tool("run_skill_script"):
+        skill_tools.append(build_run_skill_script_tool(skill_runtime))
+
+    return skill_registry, skill_tools
+
+
+def run_gradio(
+    config: AppConfig,
+    skill_registry: SkillRegistry = None,
+    skill_tools: list = None,
+):
     """
     Launch the Gradio web interface using the provided configuration.
 
@@ -76,6 +129,8 @@ def run_gradio(config: AppConfig):
         agents=config.agents,
         database_config=config.database,
         mcp_servers=config.mcp_servers,
+        skill_registry=skill_registry,
+        skill_tools=skill_tools,
     )
     gradio_interface = MADAMultiAgentGradioInterface(
         config.interface, config.agents, client
@@ -112,11 +167,15 @@ def create_gradio_app(config_path: str) -> gr.Blocks:
         Gradio Blocks interface
     """
     config = load_config_from_json(config_path)
+    skill_registry, skill_tools = _initialize_skill_state(config, config_path)
+
     client = MCPGradioClientSession(
         model_config=config.model,
         agents=config.agents,
         database_config=config.database,
         mcp_servers=config.mcp_servers,
+        skill_registry=skill_registry,
+        skill_tools=skill_tools,
     )
     gradio_interface = MADAMultiAgentGradioInterface(
         config.interface, config.agents, client
@@ -144,6 +203,7 @@ def gradio_entrypoint(port: int | None, share: bool, config_file: str):
     try:
         print(f"Loading configuration from {config_file}")
         config = load_config_from_json(config_file)
+        skill_registry, skill_tools = _initialize_skill_state(config, config_file)
 
         if not config.interface:
             print(
@@ -157,7 +217,8 @@ def gradio_entrypoint(port: int | None, share: bool, config_file: str):
             config.interface.share = True
 
         print(f"Launching on port {config.interface.port}")
-        run_gradio(config)
+        run_gradio(config, skill_registry=skill_registry, skill_tools=skill_tools)
+
     except Exception as e:
         print(f"Error launching Gradio interface: {e}")
         sys.exit(1)
