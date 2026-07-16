@@ -25,6 +25,7 @@ from agent_framework.exceptions import ToolException
 from mada.core.config import AgentConfig, DatabaseConfig, ModelConfig, MCPServerConfig
 from mada.core.coordinator import MCPAgentManager
 from mada.core.database import ChatSessionManager
+from mada.core.skill.skill_registry import SkillRegistry
 
 try:
     BaseExceptionGroup
@@ -50,6 +51,8 @@ class MADAOrchestrator(MCPAgentManager):
         mcp_servers (Dict[str, MCPServerConfig]): A dictionary store of MCP server configurations
         session_manager (ChatSessionManager): The high-level API for interacting
             with the database.
+        skill_registry: Registry of manifest-based skills to advertise to the planner.
+        skill_tools: Additional runtime tools to inject into created agents.
     """
 
     def __init__(
@@ -57,6 +60,8 @@ class MADAOrchestrator(MCPAgentManager):
         model_config: Optional[ModelConfig] = None,
         database_config: Optional[DatabaseConfig] = None,
         session_manager: ChatSessionManager = None,
+        skill_registry: Optional[SkillRegistry] = None,
+        skill_tools: Optional[List[Any]] = None,
         bearer_token: Optional[str] = None,
         timeout: int = 86400,
     ):
@@ -72,7 +77,7 @@ class MADAOrchestrator(MCPAgentManager):
                 servers as `X-Token`.
             timeout: Timeout in seconds for server operations.
         """
-        super().__init__(model_config, timeout)
+        super().__init__(model_config, timeout, skill_tools=skill_tools)
         self.exit_stack = AsyncExitStack()
         self.specialist_agents = []
         self.planning_agent = None
@@ -80,6 +85,7 @@ class MADAOrchestrator(MCPAgentManager):
         self.session = None
         self._agent_descriptions = {}
         self._mcp_tool_count = 0
+        self.skill_registry = skill_registry or SkillRegistry()
         # Initialize the database
         self.session_manager = session_manager or ChatSessionManager(database_config)
         # Authentication bearer token
@@ -428,6 +434,8 @@ class MADAOrchestrator(MCPAgentManager):
             )
             agent_tools.append(agent_tool)
 
+        agent_tools.extend(self.skill_tools)
+
         # Try to get a user defined planning agent config
         planning_cfg = self._get_planning_agent_config(agent_configs)
 
@@ -445,22 +453,32 @@ class MADAOrchestrator(MCPAgentManager):
             # Default behavior if no PlanningAgent config is provided
             base_instructions = """You are a planning agent for the MADA multi-agent system.
 
-Your specialist agents (available as tools) can be delegated tasks.
-"""
+  Your specialist agents (available as tools) can be delegated tasks.
+  """
+
+        skill_advertisement = self._format_skill_advertisement()
+        skill_guidance = ""
+        if skill_advertisement:
+            skill_guidance = f"""
+
+  Manifest-based skills available via runtime tools:
+  {skill_advertisement}
+  """
 
         # Always append up to date team description and guidelines so the planning
         # agent knows how to use the tools.
         instructions = f"""{base_instructions}
 
-Your specialist agents (available as tools):
-{team_description}
+  Your specialist agents (available as tools):
+  {team_description}
+  {skill_guidance}
 
-Guidelines:
-- Delegate to specialist agents when the request matches their expertise
-- Answer directly only for questions about the system itself
-- Avoid infinite loops between agents
-- After receiving results, synthesize and respond to the user
-"""
+  Guidelines:
+  - Delegate to specialist agents when the request matches their expertise
+  - Answer directly only for questions about the system itself
+  - Avoid infinite loops between agents
+  - After receiving results, synthesize and respond to the user
+  """
 
         # Name and any other settings can also come from planning_cfg, but we
         # hard code the name "PlanningAgent" for now to keep downstream logic simple.
@@ -518,6 +536,12 @@ Guidelines:
         failed_agents = []  # Track agents that failed to connect
 
         self.mcp_servers = mcp_servers or {}
+        all_tools.extend(
+            [
+                f"Skill Tool: {getattr(tool, 'name', getattr(tool, '__name__', 'unknown'))}"
+                for tool in self.skill_tools
+            ]
+        )
 
         for config in agent_configs:
             if not config.agent_name:
@@ -652,6 +676,26 @@ Guidelines:
         LOG.info(status)
 
         return status, all_tools
+
+    def _format_skill_advertisement(self) -> str:
+        """
+        Return compact manifest skill summaries for planner instructions.
+        """
+        if not self.skill_registry.has_skills():
+            return ""
+
+        return "\n".join(
+            f"    {summary}" for summary in self.skill_registry.skill_summaries()
+        )
+
+    def _has_skill_tool(self, tool_name: str) -> bool:
+        """
+        Return True when the orchestrator was initialized with the named skill tool.
+        """
+        return any(
+            getattr(tool, "name", getattr(tool, "__name__", "")) == tool_name
+            for tool in self.skill_tools
+        )
 
     def _stringify_openai_content(self, content: Any) -> str:
         """
