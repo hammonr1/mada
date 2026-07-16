@@ -12,11 +12,21 @@ import asyncio
 import sys
 
 import click
-from typing import Dict, List
+from pathlib import Path
+from typing import Any, Dict, List
 
 from mada.core.config import AppConfig, load_config_from_json
 from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
+
+from mada.core.skill.skill_registry import SkillRegistry
+from mada.core.skill.skill_runtime import SkillRuntime
+from mada.core.skill.skill_tools import (
+    build_load_skill_tool,
+    build_read_skill_resource_tool,
+    build_run_skill_script_tool,
+)
+from mada.interfaces.cli.skill_approval import CLISkillScriptApprover
 
 try:
     BaseExceptionGroup
@@ -32,7 +42,12 @@ class MADACLIInterface:
     providing a clean separation between UI and core functionality.
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(
+        self,
+        config: AppConfig,
+        skill_registry: SkillRegistry = None,
+        skill_tools: List[Any] = None,
+    ):
         """
         Initialize the CLI with configuration.
 
@@ -42,6 +57,8 @@ class MADACLIInterface:
         self.config = config
         self.orchestrator = None
         self.session_manager = ChatSessionManager(config.database)
+        self.skill_registry = skill_registry or SkillRegistry()
+        self.skill_tools = list(skill_tools or [])
 
     def _print_history_summary(self, history: List[Dict[str, str]]):
         """
@@ -254,6 +271,8 @@ class MADACLIInterface:
                 model_config=self.config.model,
                 database_config=self.config.database,
                 session_manager=self.session_manager,
+                skill_registry=self.skill_registry,
+                skill_tools=self.skill_tools,
             ) as orchestrator:
                 self.orchestrator = orchestrator
 
@@ -341,6 +360,22 @@ class MADACLIInterface:
         # Note: Cleanup is handled automatically by the 'async with' context manager
 
 
+def _resolve_skill_paths(skill_paths: List[str], config_file: str) -> List[Path]:
+    """
+    Resolve configured skill discovery roots relative to the config file path.
+    """
+    config_dir = Path(config_file).resolve().parent
+    resolved_paths = []
+
+    for raw_path in skill_paths:
+        skill_path = Path(raw_path)
+        if not skill_path.is_absolute():
+            skill_path = config_dir / skill_path
+        resolved_paths.append(skill_path.resolve())
+
+    return resolved_paths
+
+
 async def async_main(config_file: str):
     """
     Async main entry point for CLI.
@@ -352,8 +387,29 @@ async def async_main(config_file: str):
         # Load configuration
         config = load_config_from_json(config_file)
 
+        # Initialize manifest-based skills
+        resolved_skill_paths = _resolve_skill_paths(config.skill_paths, config_file)
+        skill_registry = SkillRegistry.discover(resolved_skill_paths)
+        skill_runtime = SkillRuntime(
+            skill_registry,
+            config=config.skill_runtime_config,
+            script_approver=CLISkillScriptApprover(),
+        )
+
+        skill_tools = []
+        if skill_registry.has_skills_for_tool("load_skill"):
+            skill_tools.append(build_load_skill_tool(skill_runtime))
+        if skill_registry.has_resources_for_tool("read_skill_resource"):
+            skill_tools.append(build_read_skill_resource_tool(skill_runtime))
+        if skill_registry.has_scripts_for_tool("run_skill_script"):
+            skill_tools.append(build_run_skill_script_tool(skill_runtime))
+
         # Run CLI
-        cli = MADACLIInterface(config)
+        cli = MADACLIInterface(
+            config,
+            skill_registry=skill_registry,
+            skill_tools=skill_tools,
+        )
         await cli.run()
 
     except FileNotFoundError:
