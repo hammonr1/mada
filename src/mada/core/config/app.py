@@ -14,7 +14,7 @@ a JSON file.
 import json
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from mada.core.config.agents import AgentConfig
@@ -23,8 +23,26 @@ from mada.core.config.interface import InterfaceConfig
 from mada.core.config.mcp_servers import MCPServerConfig
 from mada.core.config.models import ModelConfig, load_model_config
 
-
 LOG = logging.getLogger("mada-interface")
+
+
+@dataclass
+class SkillRuntimeConfig:
+    """
+    Runtime policy configuration for manifest-based skills.
+
+    Attributes:
+        default_script_timeout_seconds: Default timeout for skill script execution.
+        max_script_output_bytes: Maximum captured stdout/stderr size for a skill script.
+        max_resource_bytes: Maximum readable size for a skill resource file.
+        auto_approve_skill_scripts: If True, allow skill scripts to run without
+            interactive approval.
+    """
+
+    default_script_timeout_seconds: int = 30
+    max_script_output_bytes: int = 32 * 1024
+    max_resource_bytes: int = 32 * 1024
+    auto_approve_skill_scripts: bool = False
 
 
 @dataclass
@@ -48,6 +66,8 @@ class AppConfig:
     database: DatabaseConfig
     mcp_servers: Dict[str, MCPServerConfig] = None  # MCP server configurations
     interface: InterfaceConfig = None  # Optional, used only by the Gradio app
+    skill_paths: List[str] = field(default_factory=list)
+    skill_runtime_config: SkillRuntimeConfig = field(default_factory=SkillRuntimeConfig)
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "AppConfig":
@@ -67,6 +87,12 @@ class AppConfig:
             ValueError: If the 'agents' list is missing or empty.
         """
         app_conf = {}
+
+        # Check skills configuration (optional)
+        if "skills" in config_dict:
+            raise ValueError(
+                "Top-level 'skills' is not supported. Use top-level 'skill_paths' for manifest-based skills."
+            )
 
         # Load model configuration
         model_settings = config_dict.get("model")
@@ -100,6 +126,29 @@ class AppConfig:
                     server_config = {**server_config, "python_executable": python_exe}
                 mcp_servers_cfg[name] = MCPServerConfig(**server_config)
             app_conf["mcp_servers"] = mcp_servers_cfg
+
+        # Load skill paths (optional)
+        skill_paths_entry = config_dict.get("skill_paths")
+        if skill_paths_entry:
+            if not isinstance(skill_paths_entry, list):
+                raise ValueError("'skill_paths' must be a list of paths.")
+            skill_paths = []
+            for raw_path in skill_paths_entry:
+                if not isinstance(raw_path, str) or not raw_path.strip():
+                    raise ValueError(
+                        "Each entry in 'skill_paths' must be a non-empty path."
+                    )
+                skill_paths.append(raw_path.strip())
+            app_conf["skill_paths"] = skill_paths
+
+        # Load skill runtime configuration (optional)
+        skill_runtime_entry = config_dict.get("skill_runtime")
+        if skill_runtime_entry:
+            if not isinstance(skill_runtime_entry, dict):
+                raise ValueError(
+                    "'skill_runtime' must be a mapping of runtime settings."
+                )
+            app_conf["skill_runtime_config"] = SkillRuntimeConfig(**skill_runtime_entry)
 
         # Load interface configuration (optional for multiagent app)
         interface_entry = config_dict.get("interface")

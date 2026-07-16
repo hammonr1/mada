@@ -305,7 +305,75 @@ If you are running MADA in [Gradio mode](./usage/gradio.md), you can customize t
         "theme": "dark"
     }
 }
+
 ```
+## (Optional) Skills Configuration
+
+  MADA can optionally discover manifest-based skills from directories that you provide in the
+  configuration. A skill is a folder containing a SKILL.md file, along with optional references/,
+  assets/, and scripts/ subdirectories. This allows you to package reusable instructions and
+  supporting files outside of the main agent configuration.
+
+  ### Fields
+
+   Field Name       Description                                              Required?    Default
+  ━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━  ━━━━━━━━━
+   skill_paths      List of directories to search for skill folders          No           []
+                    containing SKILL.md.
+  ───────────────  ───────────────────────────────────────────────────────  ───────────  ─────────
+   skill_runtime    Runtime settings for reading skill resources and         No           None
+                    executing scripts.
+
+  ### skill_runtime Fields
+
+   Field Name          Description                            Required?    Default
+  ━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━
+   default_script_t    Maximum runtime for a skill-owned      No           30
+   imeout_seconds      script process.
+  ──────────────────  ─────────────────────────────────────  ───────────  ────────────────────────
+   max_resource_byt    Maximum size of a skill resource       No           implementation-defined
+   es                  that may be read as text.
+  ──────────────────  ─────────────────────────────────────  ───────────  ────────────────────────
+   max_script_outpu    Maximum amount of stdout/stderr        No           32768
+   t_bytes             captured from a skill script.
+  ──────────────────  ─────────────────────────────────────  ───────────  ────────────────────────
+   auto_approve_ski    Whether all skill scripts may run      No           false
+   ll_scripts          without approval.
+  ──────────────────  ─────────────────────────────────────  ───────────  ────────────────────────
+   default_skill_sc    Default approval mode for skill        No           prompt
+   ript_approval_mo    scripts: prompt, approve, or deny.
+   de
+  ──────────────────  ─────────────────────────────────────  ───────────  ────────────────────────
+   skill_script_app    Optional per-skill or per-script       No           {}
+   roval_modes         approval policy overrides.
+
+  ### Example
+
+  "skill_paths": [
+      "./skills"
+  ],
+  "skill_runtime": {
+      "default_script_timeout_seconds": 30,
+      "max_resource_bytes": 65536,
+      "max_script_output_bytes": 32768,
+      "auto_approve_skill_scripts": false,
+      "default_skill_script_approval_mode": "prompt",
+      "skill_script_approval_modes": {
+          "documentation-helper": "approve",
+          "documentation-helper:scripts/publish.py": "deny"
+      }
+  }
+
+  ### How Skills Configuration Works
+
+  When MADA starts, it scans each configured path in `skill_paths` for directories containing a
+  `SKILL.md` manifest. If a valid skill is found, MADA indexes the manifest along with any
+  supported resources and scripts in that folder.
+
+  This allows agents to load reusable skill instructions on demand, read skill-owned text
+  resources, and optionally execute skill-owned scripts according to the configured runtime
+  approval policy.
+
 
 ## Full Example Configuration File
 

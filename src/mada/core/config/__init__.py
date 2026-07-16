@@ -13,8 +13,9 @@ Modules:
         Defines [`AgentConfig`][core.config.agents.AgentConfig] for individual
         agent configuration and serialization helpers.
     app:
-        Defines [`AppConfig`][core.config.app.AppConfig] and utilities for loading
-        full application configuration from JSON.
+        Defines [`AppConfig`][core.config.app.AppConfig] and
+        [`SkillRuntimeConfig`][core.config.app.SkillRuntimeConfig], along with
+        utilities for loading full application configuration from JSON.
     database:
         Defines database configuration models for SQLite and PostgreSQL, along
         with database config loading helpers.
@@ -33,7 +34,7 @@ Modules:
 """
 
 from mada.core.config.agents import AgentConfig
-from mada.core.config.app import AppConfig, load_config_from_json
+from mada.core.config.app import AppConfig, SkillRuntimeConfig, load_config_from_json
 from mada.core.config.database import (
     DatabaseConfig,
     PostgreSQLConfig,
@@ -62,6 +63,7 @@ __all__ = [
     "ModelConfig",
     "OpenAIModelConfig",
     "PostgreSQLConfig",
+    "SkillRuntimeConfig",
     "SQLiteConfig",
     "expand_env_vars",
     "load_config_from_json",
