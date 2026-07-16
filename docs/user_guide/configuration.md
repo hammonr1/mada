@@ -73,7 +73,7 @@ Each agent's configuration allows you to:
 
 ### The Planning Agent
 
-MADA includes a special agent called the **planning agent**. This agent is automatically added to every group chat session and **does not need to be defined in your agent configuration**. The planning agent's role is to interpret user input, determine which helper agent is best suited to handle each request, and coordinate task delegation.
+MADA includes a special agent called the **planning agent**. This agent is automatically added to orchestration and **does not need to be defined in your agent configuration**. In `agent-as-tool` mode it acts as the visible planner that delegates to specialists as tools. In `magentic` mode the same configuration is reused as the hidden Magentic manager that coordinates the peer specialist group chat.
 
 The default, base instructions for the planning agent are:
 
@@ -93,6 +93,8 @@ If you'd like to modify these instructions, add an agent entry to the `"agents"`
 ```
 
 !!! note
+
+    `PlanningAgent` is never part of `orchestration.participants`. In `magentic` mode it customizes the hidden manager instead of joining the visible specialist list.
 
     The planning agent will always include core instructions that cannot be modified. These instructions describe each specialist agent you define, and include the following guidelines:
 
@@ -199,15 +201,17 @@ When you start MADA, it reads your model configuration to connect to the right l
 
 ## (Optional) Orchestration Configuration
 
-MADA now exposes the orchestration pattern as an explicit top-level config block. In
-this release, the current planner-plus-specialist flow is named `agent-as-tool` and
-it is the only supported mode.
+MADA now exposes the orchestration pattern as an explicit top-level config block. Two
+internal modes are supported:
+
+- `agent-as-tool`: the existing planner-plus-specialist flow
+- `magentic`: a peer specialist group chat coordinated by a hidden manager
 
 ### Fields
 
 | Field Name     | Description                                                                 | Required? | Default           |
 | -------------- | --------------------------------------------------------------------------- | --------- | ----------------- |
-| `mode`         | Internal orchestration mode. Only `agent-as-tool` is supported right now.   | No        | `agent-as-tool`   |
+| `mode`         | Internal orchestration mode. Supported values are `agent-as-tool` and `magentic`. | No        | `agent-as-tool`   |
 | `participants` | Optional list of specialist agent names to include. `PlanningAgent` is excluded. | No        | All non-`PlanningAgent` agents |
 
 ### Example
@@ -222,10 +226,11 @@ it is the only supported mode.
 If `participants` is omitted, MADA includes every configured agent except
 `PlanningAgent`.
 
-### Future Mode Example
+In `magentic` mode, the `participants` list still refers only to specialist
+agents. If a `PlanningAgent` config is present, its instructions customize the
+hidden Magentic manager. Otherwise MADA uses its built-in manager instructions.
 
-The following shape is reserved for a future orchestration mode, but it is not
-implemented in this MR. Using it today fails fast with `unsupported orchestration mode`.
+### Magentic Example
 
 ```json
 "orchestration": {

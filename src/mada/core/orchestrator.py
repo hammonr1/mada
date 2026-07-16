@@ -16,11 +16,24 @@ import traceback
 from types import TracebackType
 from typing import Any, Dict, List, Optional, Tuple, Type, AsyncGenerator
 from contextlib import AsyncExitStack
+from collections.abc import AsyncIterable
 import httpx
 import httpcore
 
 from agent_framework import Agent, MCPStdioTool, MCPStreamableHTTPTool
 from agent_framework.exceptions import ToolException
+
+try:
+    from agent_framework import MagenticBuilder
+except ImportError:  # pragma: no cover - depends on installed agent framework version
+    try:
+        from agent_framework.orchestrations import (  # type: ignore[attr-defined]
+            MagenticBuilder,
+        )
+    except (
+        ImportError
+    ):  # pragma: no cover - depends on installed agent framework version
+        MagenticBuilder = None
 
 from mada.core.config import (
     AgentConfig,
@@ -70,157 +83,68 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         agent_configs: List[AgentConfig],
         mcp_servers: Dict[str, MCPServerConfig] | None = None,
     ) -> Tuple[str, List[str]]:
-        orchestrator.specialist_agents = []
-        orchestrator._mcp_tool_count = 0
-        all_tools = []
-        failed_servers = []
-        failed_agents = []
-
-        participant_configs = orchestrator.resolve_participant_configs(agent_configs)
-        orchestrator.mcp_servers = mcp_servers or {}
-
-        for config in participant_configs:
-            if not config.agent_name:
-                continue
-
-            if config.mcp_servers and orchestrator.mcp_servers:
-                try:
-                    (
-                        agent,
-                        mcp_tools,
-                        tool_names,
-                        agent_failed_servers,
-                    ) = await orchestrator.connect_agent(
-                        config, orchestrator.mcp_servers
-                    )
-                    orchestrator.specialist_agents.append(agent)
-                    orchestrator._mcp_tool_count += len(mcp_tools)
-                    all_tools.extend(
-                        [f"{config.agent_name}: {tool}" for tool in tool_names]
-                    )
-
-                    if agent_failed_servers:
-                        for failed_server in agent_failed_servers:
-                            failed_servers.append(
-                                {
-                                    "agent": config.agent_name,
-                                    "server": failed_server["name"],
-                                    "url": failed_server["url"],
-                                    "error": failed_server["error"],
-                                }
-                            )
-
-                    if tool_names:
-                        LOG.info(
-                            f"Connected agent {config.agent_name} with {len(tool_names)} MCP tools"
-                        )
-                    else:
-                        LOG.warning(
-                            f"Agent {config.agent_name} connected but no MCP servers available"
-                        )
-                        if config.mcp_servers:
-                            failed_agents.append(config.agent_name)
-                except BaseExceptionGroup as eg:
-                    LOG.error(
-                        f"Multiple errors connecting agent {config.agent_name} ({len(eg.exceptions)} errors)"
-                    )
-                    failed_agents.append(config.agent_name)
-                    continue
-                except Exception as e:
-                    LOG.error(f"Failed to connect agent {config.agent_name}: {e}")
-                    traceback.print_exc()
-                    failed_agents.append(config.agent_name)
-                    continue
-            elif config.server_path:
-                try:
-                    is_python = config.server_path.endswith(".py")
-                    command = sys.executable if is_python else "node"
-                    args = (
-                        ["-u", config.server_path]
-                        if is_python
-                        else [config.server_path]
-                    )
-                    mcp_tool = MCPStdioTool(
-                        name=f"{config.agent_name}_mcp",
-                        command=command,
-                        args=args,
-                    )
-
-                    mcp_tool = await orchestrator.exit_stack.enter_async_context(
-                        mcp_tool
-                    )
-
-                    orchestrator._agent_descriptions[config.agent_name] = (
-                        config.description
-                    )
-
-                    agent = await orchestrator.create_chat_agent(
-                        config,
-                        tools=[mcp_tool],
-                    )
-
-                    orchestrator.specialist_agents.append(agent)
-                    orchestrator._mcp_tool_count += 1
-                    all_tools.append(f"{config.agent_name}: {config.server_path}")
-                    LOG.info(
-                        f"Connected legacy agent {config.agent_name} with 1 MCP tool"
-                    )
-                except Exception as e:
-                    LOG.error(
-                        f"Failed to connect legacy agent {config.agent_name}: {e}"
-                    )
-                    continue
-            elif not config.mcp_servers:
-                LOG.info(f"Creating agent {config.agent_name} without MCP tools")
-                try:
-                    orchestrator._agent_descriptions[config.agent_name] = (
-                        config.description
-                    )
-                    agent = await orchestrator.create_chat_agent(config, tools=[])
-                    orchestrator.specialist_agents.append(agent)
-                except Exception as e:
-                    LOG.error(f"Failed to create agent {config.agent_name}: {e}")
-                    continue
-            else:
-                LOG.warning(f"Agent {config.agent_name} has no MCP servers configured")
-                continue
-
-        active_specialist_names = {
-            agent.name for agent in orchestrator.specialist_agents
-        }
-        active_participant_configs = [
-            config
-            for config in participant_configs
-            if config.agent_name in active_specialist_names
-        ]
+        (
+            _participant_configs,
+            active_participant_configs,
+            all_tools,
+            failed_servers,
+            failed_agents,
+        ) = await orchestrator._initialize_specialist_agents(
+            agent_configs=agent_configs,
+            mcp_servers=mcp_servers,
+        )
 
         orchestrator.planning_agent = orchestrator._create_planning_agent(
             agent_configs=agent_configs,
             participant_configs=active_participant_configs,
         )
         orchestrator.session = orchestrator.planning_agent.create_session()
+        orchestrator.manager_agent = None
 
-        status_parts = []
-        status_parts.append(
-            f"Connection Successful: Orchestrator initialized with {orchestrator._mcp_tool_count} MCP Servers and {len(orchestrator.specialist_agents) + 1} agents"
+        status = orchestrator._format_initialization_status(
+            failed_servers=failed_servers,
+            failed_agents=failed_agents,
+        )
+        LOG.info(status)
+
+        return status, all_tools
+
+
+class MagenticOrchestrationStrategy(BaseOrchestrationStrategy):
+    """
+    Peer specialist group chat coordinated by a hidden manager agent.
+    """
+
+    mode = "magentic"
+
+    async def initialize(
+        self,
+        orchestrator: "MADAOrchestrator",
+        agent_configs: List[AgentConfig],
+        mcp_servers: Dict[str, MCPServerConfig] | None = None,
+    ) -> Tuple[str, List[str]]:
+        (
+            _participant_configs,
+            active_participant_configs,
+            all_tools,
+            failed_servers,
+            failed_agents,
+        ) = await orchestrator._initialize_specialist_agents(
+            agent_configs=agent_configs,
+            mcp_servers=mcp_servers,
         )
 
-        if failed_servers:
-            status_parts.append(
-                f"\nWARNING: {len(failed_servers)} MCP server(s) failed to connect:"
-            )
-            for failed_server in failed_servers:
-                status_parts.append(
-                    f"  • {failed_server['agent']}/{failed_server['server']} at {failed_server['url']}"
-                )
-                status_parts.append(f"    Error: {failed_server['error']}")
+        orchestrator.planning_agent = None
+        orchestrator.session = None
+        orchestrator.manager_agent = orchestrator._create_magentic_manager_agent(
+            agent_configs=agent_configs,
+            participant_configs=active_participant_configs,
+        )
 
-        if failed_agents:
-            status_parts.append(
-                f"\nERROR: {len(failed_agents)} agent(s) failed to initialize: {', '.join(failed_agents)}"
-            )
-
-        status = "\n".join(status_parts)
+        status = orchestrator._format_initialization_status(
+            failed_servers=failed_servers,
+            failed_agents=failed_agents,
+        )
         LOG.info(status)
 
         return status, all_tools
@@ -268,6 +192,7 @@ class MADAOrchestrator(MCPAgentManager):
         self.exit_stack = AsyncExitStack()
         self.specialist_agents = []
         self.planning_agent = None
+        self.manager_agent = None
         self.mcp_servers = {}
         self.session = None
         self._agent_descriptions = {}
@@ -296,6 +221,8 @@ class MADAOrchestrator(MCPAgentManager):
         """
         if mode == AgentAsToolOrchestrationStrategy.mode:
             return AgentAsToolOrchestrationStrategy()
+        if mode == MagenticOrchestrationStrategy.mode:
+            return MagenticOrchestrationStrategy()
 
         raise ValueError(f"unsupported orchestration mode: {mode}")
 
@@ -360,6 +287,179 @@ class MADAOrchestrator(MCPAgentManager):
             if cfg.agent_name == "PlanningAgent":
                 return cfg
         return None
+
+    async def _initialize_specialist_agents(
+        self,
+        agent_configs: List[AgentConfig],
+        mcp_servers: Dict[str, MCPServerConfig] | None = None,
+    ) -> Tuple[
+        List[AgentConfig],
+        List[AgentConfig],
+        List[str],
+        List[Dict[str, str]],
+        List[str],
+    ]:
+        """
+        Create specialist agents for the configured orchestration participants.
+
+        The connection path is shared across orchestration strategies so MCP
+        setup, legacy `server_path` handling, and active-agent filtering remain
+        identical regardless of how requests are later coordinated.
+        """
+        self.specialist_agents = []
+        self._mcp_tool_count = 0
+        self._agent_descriptions = {}
+        self.mcp_servers = mcp_servers or {}
+
+        all_tools = []
+        failed_servers = []
+        failed_agents = []
+        participant_configs = self.resolve_participant_configs(agent_configs)
+
+        for config in participant_configs:
+            if not config.agent_name:
+                continue
+
+            if config.mcp_servers and self.mcp_servers:
+                try:
+                    (
+                        agent,
+                        mcp_tools,
+                        tool_names,
+                        agent_failed_servers,
+                    ) = await self.connect_agent(config, self.mcp_servers)
+                    self.specialist_agents.append(agent)
+                    self._mcp_tool_count += len(mcp_tools)
+                    all_tools.extend(
+                        [f"{config.agent_name}: {tool}" for tool in tool_names]
+                    )
+
+                    if agent_failed_servers:
+                        for failed_server in agent_failed_servers:
+                            failed_servers.append(
+                                {
+                                    "agent": config.agent_name,
+                                    "server": failed_server["name"],
+                                    "url": failed_server["url"],
+                                    "error": failed_server["error"],
+                                }
+                            )
+
+                    if tool_names:
+                        LOG.info(
+                            f"Connected agent {config.agent_name} with {len(tool_names)} MCP tools"
+                        )
+                    else:
+                        LOG.warning(
+                            f"Agent {config.agent_name} connected but no MCP servers available"
+                        )
+                        if config.mcp_servers:
+                            failed_agents.append(config.agent_name)
+                except BaseExceptionGroup as eg:
+                    LOG.error(
+                        f"Multiple errors connecting agent {config.agent_name} ({len(eg.exceptions)} errors)"
+                    )
+                    failed_agents.append(config.agent_name)
+                    continue
+                except Exception as e:
+                    LOG.error(f"Failed to connect agent {config.agent_name}: {e}")
+                    traceback.print_exc()
+                    failed_agents.append(config.agent_name)
+                    continue
+            elif config.server_path:
+                try:
+                    is_python = config.server_path.endswith(".py")
+                    command = sys.executable if is_python else "node"
+                    args = (
+                        ["-u", config.server_path]
+                        if is_python
+                        else [config.server_path]
+                    )
+                    mcp_tool = MCPStdioTool(
+                        name=f"{config.agent_name}_mcp",
+                        command=command,
+                        args=args,
+                    )
+
+                    mcp_tool = await self.exit_stack.enter_async_context(mcp_tool)
+
+                    self._agent_descriptions[config.agent_name] = config.description
+
+                    agent = await self.create_chat_agent(
+                        config,
+                        tools=[mcp_tool],
+                    )
+
+                    self.specialist_agents.append(agent)
+                    self._mcp_tool_count += 1
+                    all_tools.append(f"{config.agent_name}: {config.server_path}")
+                    LOG.info(
+                        f"Connected legacy agent {config.agent_name} with 1 MCP tool"
+                    )
+                except Exception as e:
+                    LOG.error(
+                        f"Failed to connect legacy agent {config.agent_name}: {e}"
+                    )
+                    failed_agents.append(config.agent_name)
+                    continue
+            elif not config.mcp_servers:
+                LOG.info(f"Creating agent {config.agent_name} without MCP tools")
+                try:
+                    self._agent_descriptions[config.agent_name] = config.description
+                    agent = await self.create_chat_agent(config, tools=[])
+                    self.specialist_agents.append(agent)
+                except Exception as e:
+                    LOG.error(f"Failed to create agent {config.agent_name}: {e}")
+                    failed_agents.append(config.agent_name)
+                    continue
+            else:
+                LOG.warning(f"Agent {config.agent_name} has no MCP servers configured")
+                failed_agents.append(config.agent_name)
+                continue
+
+        active_specialist_names = {agent.name for agent in self.specialist_agents}
+        active_participant_configs = [
+            config
+            for config in participant_configs
+            if config.agent_name in active_specialist_names
+        ]
+
+        return (
+            participant_configs,
+            active_participant_configs,
+            all_tools,
+            failed_servers,
+            failed_agents,
+        )
+
+    def _format_initialization_status(
+        self,
+        failed_servers: List[Dict[str, str]],
+        failed_agents: List[str],
+    ) -> str:
+        coordinator_count = 1 if (self.planning_agent or self.manager_agent) else 0
+        status_parts = [
+            "Connection Successful: Orchestrator initialized with "
+            f"{self._mcp_tool_count} MCP Servers and "
+            f"{len(self.specialist_agents) + coordinator_count} agents"
+        ]
+
+        if failed_servers:
+            status_parts.append(
+                f"\nWARNING: {len(failed_servers)} MCP server(s) failed to connect:"
+            )
+            for failed_server in failed_servers:
+                status_parts.append(
+                    f"  • {failed_server['agent']}/{failed_server['server']} at {failed_server['url']}"
+                )
+                status_parts.append(f"    Error: {failed_server['error']}")
+
+        if failed_agents:
+            status_parts.append(
+                f"\nERROR: {len(failed_agents)} agent(s) failed to initialize: {', '.join(failed_agents)}"
+            )
+
+        return "\n".join(status_parts)
 
     async def _cleanup_http_client(self, http_client, context: str = ""):
         """
@@ -738,6 +838,81 @@ Guidelines:
 
         return planning_agent
 
+    def _create_magentic_manager_agent(
+        self,
+        agent_configs: List[AgentConfig],
+        participant_configs: List[AgentConfig],
+    ) -> Agent:
+        """
+        Create the hidden manager agent used by Magentic orchestration.
+        """
+        team_description = self._generate_team_description(participant_configs)
+        planning_cfg = self._get_planning_agent_config(agent_configs)
+
+        if planning_cfg and planning_cfg.mcp_servers:
+            LOG.warning(
+                "PlanningAgent MCP server support is not implemented. "
+                "MCP servers listed in PlanningAgent config will be ignored."
+            )
+
+        if planning_cfg and planning_cfg.instructions:
+            base_instructions = planning_cfg.instructions.strip()
+        else:
+            base_instructions = """You are the hidden manager for MADA's Magentic orchestration mode.
+
+Coordinate the specialist agents as peers, track plan and progress internally,
+and produce the final response for the user."""
+
+        instructions = f"""{base_instructions}
+
+Specialist participants:
+{team_description}
+
+Guidelines:
+- Coordinate the specialists as a peer conversation
+- Re-plan when the current approach stalls or conflicts
+- Keep internal planning and progress chatter out of the final user-facing answer
+- Produce the final synthesized assistant response for the user
+"""
+
+        agent_kwargs = {}
+        if planning_cfg:
+            agent_kwargs.update(planning_cfg.extra)
+
+        agent_name = planning_cfg.agent_name if planning_cfg else "PlanningAgent"
+        return self.model_client.as_agent(
+            name=agent_name,
+            instructions=instructions,
+            **agent_kwargs,
+        )
+
+    def _create_magentic_builder(self):
+        """
+        Create a fresh Magentic builder for a request.
+        """
+        if MagenticBuilder is None:
+            raise RuntimeError(
+                "Magentic orchestration requires agent_framework MagenticBuilder support"
+            )
+
+        return MagenticBuilder(
+            participants=self.specialist_agents,
+            manager_agent=self.manager_agent,
+        )
+
+    def _build_magentic_runtime(self):
+        """
+        Build a runnable Magentic workflow instance.
+        """
+        builder = self._create_magentic_builder()
+
+        for method_name in ("build", "create_workflow", "create"):
+            method = getattr(builder, method_name, None)
+            if callable(method):
+                return method()
+
+        return builder
+
     def _generate_team_description(self, agent_configs: List[AgentConfig]) -> str:
         """
         Generate formatted team member descriptions.
@@ -824,21 +999,12 @@ Guidelines:
 
         return str(content)
 
-    def build_prompt_from_openai_messages(self, messages: List[Dict[str, Any]]) -> str:
+    def _normalize_transcript_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, str]]:
         """
-        Flatten OpenAI-style chat messages into a single prompt.
-
-        Open WebUI sends the full conversation history on each request. The agent
-        framework session used by the CLI is not shared here; instead we rebuild the
-        transcript for each HTTP request to keep requests isolated.
-
-        Args:
-            messages: OpenAI-style chat messages. Each message is expected to
-                include at least a `role` and `content`.
-
-        Returns:
-            A single prompt string that contains the conversation transcript and
-            instructions to continue as the assistant.
+        Normalize OpenAI-style messages or persisted chat history into a shared
+        role/content transcript format.
         """
         transcript = []
         for message in messages:
@@ -847,7 +1013,28 @@ Guidelines:
             content = self._stringify_openai_content(message.get("content")).strip()
             if not content:
                 continue
-            transcript.append(f"{role.upper()}:\n{content}")
+            transcript.append({"role": role, "content": content})
+
+        return transcript
+
+    def build_prompt_from_transcript(self, messages: List[Dict[str, Any]]) -> str:
+        """
+        Flatten a normalized transcript into a single prompt.
+
+        This is used both for OpenAI-style HTTP request messages and for
+        persisted interactive session history when rebuilding a fresh workflow.
+
+        Args:
+            messages: Transcript messages with `role` and `content` keys.
+
+        Returns:
+            A single prompt string that contains the conversation transcript and
+            instructions to continue as the assistant.
+        """
+        transcript = [
+            f"{message['role'].upper()}:\n{message['content']}"
+            for message in self._normalize_transcript_messages(messages)
+        ]
 
         if not transcript:
             return "USER:\nPlease introduce yourself."
@@ -857,6 +1044,172 @@ Guidelines:
             "Continue the conversation below and respond as the assistant to the "
             "latest user request.\n\n"
             f"{conversation}"
+        )
+
+    def build_prompt_from_openai_messages(self, messages: List[Dict[str, Any]]) -> str:
+        """
+        Flatten OpenAI-style chat messages into a single prompt.
+        """
+        return self.build_prompt_from_transcript(messages)
+
+    async def _stream_agent_as_tool_response(
+        self,
+        prompt: str,
+        *,
+        session,
+        include_tool_notices: bool,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Stream output from the reusable planning-agent runtime.
+        """
+        response_started = False
+        tool_calls = []
+        stream = self.planning_agent.run(prompt, session=session, stream=True)
+        async for chunk in stream:
+            if chunk.text:
+                response_started = True
+                yield chunk.text
+                continue
+
+            if not include_tool_notices:
+                continue
+
+            if hasattr(chunk, "contents") and chunk.contents:
+                for content in chunk.contents:
+                    if not hasattr(content, "to_dict"):
+                        continue
+                    item = content.to_dict()
+                    if item.get("type") not in ("function_call", "tool_call"):
+                        continue
+                    name = item.get("name")
+                    call_id = item.get("call_id")
+                    if name and (call_id is None or call_id not in tool_calls):
+                        if call_id:
+                            tool_calls.append(call_id)
+                        yield f"\n[Calling: {name}]\n"
+
+        if not response_started:
+            LOG.warning("No text chunks received from planning agent")
+
+    def _extract_magentic_text(self, payload: Any) -> str:
+        """
+        Best-effort extraction of a final assistant reply from Magentic results.
+        """
+        if payload is None:
+            return ""
+
+        if isinstance(payload, str):
+            return payload
+
+        if isinstance(payload, dict):
+            event_type = str(payload.get("type") or payload.get("event") or "").lower()
+            if event_type in {"plan", "progress", "replan", "checkpoint"}:
+                return ""
+            for key in (
+                "final_output",
+                "final_response",
+                "assistant_response",
+                "response",
+                "output",
+                "content",
+                "text",
+            ):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+            return ""
+
+        event_type = str(
+            getattr(payload, "type", "") or getattr(payload, "event", "")
+        ).lower()
+        if event_type in {"plan", "progress", "replan", "checkpoint"}:
+            return ""
+
+        for attr in (
+            "final_output",
+            "final_response",
+            "assistant_response",
+            "response",
+            "output",
+            "content",
+            "text",
+        ):
+            value = getattr(payload, attr, None)
+            if isinstance(value, str) and value.strip():
+                return value
+
+        if hasattr(payload, "to_dict"):
+            return self._extract_magentic_text(payload.to_dict())
+
+        return ""
+
+    async def _consume_magentic_result(self, result: Any) -> str:
+        """
+        Consume a Magentic workflow result and return only the final assistant text.
+        """
+        if asyncio.iscoroutine(result):
+            result = await result
+
+        if isinstance(result, AsyncIterable):
+            final_text = ""
+            async for event in result:
+                event_text = self._extract_magentic_text(event)
+                if event_text:
+                    final_text = event_text
+            return final_text
+
+        if hasattr(result, "__iter__") and not isinstance(result, (str, dict)):
+            final_text = ""
+            for event in result:
+                event_text = self._extract_magentic_text(event)
+                if event_text:
+                    final_text = event_text
+            return final_text
+
+        return self._extract_magentic_text(result)
+
+    async def _run_magentic_workflow(
+        self,
+        transcript_messages: List[Dict[str, Any]],
+    ) -> str:
+        """
+        Run a fresh Magentic workflow from a rebuilt transcript.
+        """
+        if not self.manager_agent:
+            raise RuntimeError("Magentic manager is not initialized.")
+
+        runtime = self._build_magentic_runtime()
+        prompt = self.build_prompt_from_transcript(transcript_messages)
+
+        for method_name in ("run_stream", "stream", "run", "invoke"):
+            method = getattr(runtime, method_name, None)
+            if not callable(method):
+                continue
+
+            try:
+                if method_name in {"run_stream", "stream"}:
+                    return await self._consume_magentic_result(method(prompt))
+                return await self._consume_magentic_result(method(prompt))
+            except TypeError:
+                # Some versions accept transcript messages instead of a flattened prompt.
+                if method_name in {"run_stream", "stream"}:
+                    return await self._consume_magentic_result(
+                        method(
+                            messages=self._normalize_transcript_messages(
+                                transcript_messages
+                            )
+                        )
+                    )
+                return await self._consume_magentic_result(
+                    method(
+                        messages=self._normalize_transcript_messages(
+                            transcript_messages
+                        )
+                    )
+                )
+
+        raise RuntimeError(
+            "Unable to execute Magentic workflow with the installed builder."
         )
 
     async def process_openai_messages(
@@ -877,36 +1230,42 @@ Guidelines:
             Response text chunks from the planning agent, plus bracketed tool
             call notices when the underlying stream reports them.
         """
+        transcript_messages = self._normalize_transcript_messages(messages)
+
+        if self.orchestration.mode == MagenticOrchestrationStrategy.mode:
+            if not self.manager_agent:
+                yield "Error: Orchestrator not initialized."
+                return
+
+            try:
+                response = await self._run_magentic_workflow(transcript_messages)
+                if response:
+                    yield response
+                else:
+                    LOG.warning(
+                        "No final assistant text received from Magentic workflow"
+                    )
+            except Exception as e:
+                error_msg = f"Error processing message: {e}"
+                LOG.error(error_msg)
+                traceback.print_exc()
+                yield error_msg
+            return
+
         if not self.planning_agent:
             yield "Error: Orchestrator not initialized."
             return
 
-        prompt = self.build_prompt_from_openai_messages(messages)
+        prompt = self.build_prompt_from_transcript(transcript_messages)
         request_session = self.planning_agent.create_session()
 
         try:
-            response_started = False
-            stream = self.planning_agent.run(
-                prompt, session=request_session, stream=True
-            )
-            async for chunk in stream:
-                if chunk.text:
-                    response_started = True
-                    yield chunk.text
-                elif hasattr(chunk, "contents") and chunk.contents:
-                    for content in chunk.contents:
-                        if hasattr(content, "to_dict"):
-                            item = content.to_dict()
-                            if item.get("type") in (
-                                "function_call",
-                                "tool_call",
-                            ) and item.get("name"):
-                                yield f"\n[Calling: {item['name']}]\n"
-
-            if not response_started:
-                LOG.warning(
-                    "No text chunks received from planning agent for OpenAI API request"
-                )
+            async for chunk in self._stream_agent_as_tool_response(
+                prompt,
+                session=request_session,
+                include_tool_notices=True,
+            ):
+                yield chunk
 
         except Exception as e:
             error_msg = f"Error processing message: {e}"
@@ -928,42 +1287,56 @@ Guidelines:
             Response text chunks from the planning agent, plus bracketed tool
             call notices when the underlying stream reports them.
         """
+        if self.orchestration.mode == MagenticOrchestrationStrategy.mode:
+            if not self.manager_agent:
+                yield "Error: Orchestrator not initialized. Call initialize_orchestrator() first."
+                return
+
+            try:
+                self.session_manager.add_message("user", message)
+                transcript_messages = self._normalize_transcript_messages(
+                    self.session_manager.load_history()
+                )
+                aggregated_assistant_reply = await self._run_magentic_workflow(
+                    transcript_messages
+                )
+                if aggregated_assistant_reply.strip():
+                    self.session_manager.add_message(
+                        "assistant", aggregated_assistant_reply
+                    )
+                    yield aggregated_assistant_reply
+                else:
+                    LOG.warning(
+                        "No final assistant text received from Magentic workflow"
+                    )
+            except Exception as e:
+                error_msg = f"Error processing message: {e}"
+                LOG.error(error_msg)
+                traceback.print_exc()
+                yield error_msg
+            return
+
         if not self.planning_agent:
             yield "Error: Orchestrator not initialized. Call initialize_orchestrator() first."
             return
 
         aggregated_assistant_reply = ""
-        tool_calls = []
 
         try:
             # Store the user message in the database
             self.session_manager.add_message("user", message)
 
             # Stream responses from the planning agent with conversation context
-            response_started = False
-            stream = self.planning_agent.run(message, session=self.session, stream=True)
-            async for chunk in stream:
-                if chunk.text:
-                    response_started = True
-                    aggregated_assistant_reply += chunk.text
-                    yield chunk.text
-                elif hasattr(chunk, "contents") and chunk.contents:
-                    for content in chunk.contents:
-                        if hasattr(content, "to_dict"):
-                            d = content.to_dict()
-                            if d.get("type") in (
-                                "function_call",
-                                "tool_call",
-                            ) and d.get("name"):
-                                call_id = d.get("call_id")
-                                name = d.get("name")
-
-                                if call_id and call_id not in tool_calls:
-                                    tool_calls.append(call_id)
-                                    yield f"\n[Calling: {name}]\n"
-
-            if not response_started:
-                LOG.warning("No text chunks received from planning agent")
+            async for chunk in self._stream_agent_as_tool_response(
+                message,
+                session=self.session,
+                include_tool_notices=True,
+            ):
+                if not (
+                    chunk.startswith("\n[Calling: ") and chunk.rstrip().endswith("]")
+                ):
+                    aggregated_assistant_reply += chunk
+                yield chunk
 
             if aggregated_assistant_reply.strip():
                 self.session_manager.add_message(
@@ -1022,6 +1395,7 @@ Guidelines:
             await self.exit_stack.aclose()
             self.specialist_agents.clear()
             self.planning_agent = None
+            self.manager_agent = None
             self.session = None
             self._agent_descriptions.clear()
             LOG.info("Orchestrator cleanup completed")

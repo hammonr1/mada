@@ -6,6 +6,11 @@ Multi-agent orchestration system for coordinating complex engineering workflows 
 
 MADA coordinates multiple specialized agents to execute complex engineering workflows. Each agent connects to MCP servers that provide domain-specific tools for simulation, geometry, job management, and inverse design.
 
+MADA supports two internal orchestration modes:
+
+- `agent-as-tool`: a planning agent delegates work to specialist agents exposed as tools
+- `magentic`: selected specialist agents participate in a peer group chat coordinated by a hidden manager
+
 
 ### Project Structure
 
@@ -89,6 +94,13 @@ MADA uses a single JSON configuration file that defines all agents and their MCP
 - **MCP server endpoints**: Transport types, URLs, and descriptions
 - **Orchestration settings**: Timeouts, concurrency limits, coordination options
 - **Interface configuration**: UI titles, descriptions, and placeholders
+
+The orchestration block currently exposes:
+
+- `mode`: `agent-as-tool` or `magentic`
+- `participants`: optional ordered specialist subset for either mode
+
+`PlanningAgent` is never a participant. If present in your config, it customizes the visible planner in `agent-as-tool` mode and the hidden manager in `magentic` mode.
 
 See [`configs/mada_config.json`](configs/mada_config.json) for the complete configuration.
 

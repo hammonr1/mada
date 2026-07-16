@@ -52,6 +52,15 @@ src/
     │   └── gradio/                 # Web-based interface
 ```
 
+## Orchestration Modes
+
+`src/mada/core/orchestrator.py` contains the internal strategy boundary for MADA orchestration. The current implementation supports two modes:
+
+- `agent-as-tool`: builds a reusable planning-agent session and exposes specialist agents as tools
+- `magentic`: builds a fresh peer-agent workflow per request and uses `PlanningAgent` only as the hidden manager configuration source
+
+In both modes, participant resolution follows the same rules: `PlanningAgent` is excluded, omitted participants means all non-`PlanningAgent` agents, and ordering is preserved while duplicates are collapsed.
+
 ## Test Code Structure
 
 Tests should follow the same directory structure as the [source code](#source-code-structure). There should be organizational directories and appropriate test files underneath them. For example, tests for the coordinator module will live at `tests/core/coordinator/` just like its source code lives at `mada/core/coordinator.py`.
