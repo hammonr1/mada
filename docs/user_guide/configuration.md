@@ -222,18 +222,6 @@ it is the only supported mode.
 If `participants` is omitted, MADA includes every configured agent except
 `PlanningAgent`.
 
-### Future Mode Example
-
-The following shape is reserved for a future orchestration mode, but it is not
-implemented in this MR. Using it today fails fast with `unsupported orchestration mode`.
-
-```json
-"orchestration": {
-    "mode": "magentic",
-    "participants": ["JobManagementAgent", "InverseDesignAgent"]
-}
-```
-
 ## (Optional) Database Configuration
 
 If you want to customize your database settings, you can set this in the configuration file. There are two database options:
