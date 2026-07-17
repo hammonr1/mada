@@ -124,9 +124,11 @@ class MCPGradioClientSession:
             active_agents = [
                 agent for agent in self.agents if agent.agent_name in agent_dict
             ]
+            table_agents = active_agents or self.agents
+            table_agent_dict = agent_dict if active_agents else None
             self.initialized = True
             return gr.Button(status_msg, elem_id="green_btn"), create_agent_table(
-                active_agents, agent_dict
+                table_agents, table_agent_dict
             )
 
         except BaseExceptionGroup as eg:
