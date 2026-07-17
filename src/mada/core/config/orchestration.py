@@ -115,7 +115,10 @@ def load_orchestration_config(
     Returns:
         A validated orchestration configuration object.
     """
-    if not config_dict:
+    if config_dict is None:
         return OrchestrationConfig()
+
+    if not isinstance(config_dict, dict):
+        raise ValueError("'orchestration' must be an object")
 
     return OrchestrationConfig(**config_dict)

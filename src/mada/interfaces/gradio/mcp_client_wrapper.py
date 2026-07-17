@@ -121,12 +121,23 @@ class MCPGradioClientSession:
             LOG.info("Orchestrator initialization complete!")
 
             agent_dict = cycle_through_tools(self.orchestrator.specialist_agents)
-            active_agents = [
-                agent for agent in self.agents if agent.agent_name in agent_dict
-            ]
+            configured_participants = self.orchestration_config.participants
+            if configured_participants is None:
+                active_agents = [
+                    agent for agent in self.agents if agent.agent_name in agent_dict
+                ]
+                table_agents = active_agents or self.agents
+                table_agent_dict = agent_dict if active_agents else None
+            else:
+                table_agents = [
+                    agent
+                    for agent in self.agents
+                    if agent.agent_name in configured_participants
+                ]
+                table_agent_dict = agent_dict
             self.initialized = True
             return gr.Button(status_msg, elem_id="green_btn"), create_agent_table(
-                active_agents, agent_dict
+                table_agents, table_agent_dict
             )
 
         except BaseExceptionGroup as eg:

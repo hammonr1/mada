@@ -27,6 +27,9 @@ Modules:
     models:
         Defines provider model configuration classes and model config loading
         helpers.
+    orchestration:
+        Defines [`OrchestrationConfig`][core.config.orchestration.OrchestrationConfig]
+        and helpers for loading supported orchestration mode settings.
     utils:
         Defines shared utility helpers, including environment variable
         expansion.
