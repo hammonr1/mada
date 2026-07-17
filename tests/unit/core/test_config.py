@@ -3,7 +3,12 @@
 
 import pytest
 
-from mada.core.config import PostgreSQLConfig, SQLiteConfig
+from mada.core.config import (
+    DEFAULT_ORCHESTRATION_MODE,
+    PostgreSQLConfig,
+    SQLiteConfig,
+    load_orchestration_config,
+)
 
 
 @pytest.mark.unit
@@ -71,3 +76,23 @@ class TestPostgreSQLConfig:
         assert config.get_connection_string() == expected_connection_string, (
             "PostgreSQL connection string should expand environment variables correctly."
         )
+
+
+@pytest.mark.unit
+class TestOrchestrationConfig:
+    def test_load_orchestration_config_defaults_when_omitted(self):
+        config = load_orchestration_config(None)
+
+        assert config.mode == DEFAULT_ORCHESTRATION_MODE
+        assert config.participants is None
+
+    def test_load_orchestration_config_defaults_for_empty_object(self):
+        config = load_orchestration_config({})
+
+        assert config.mode == DEFAULT_ORCHESTRATION_MODE
+        assert config.participants is None
+
+    @pytest.mark.parametrize("invalid_value", [False, []])
+    def test_load_orchestration_config_rejects_non_object_blocks(self, invalid_value):
+        with pytest.raises(ValueError, match="'orchestration' must be an object"):
+            load_orchestration_config(invalid_value)
