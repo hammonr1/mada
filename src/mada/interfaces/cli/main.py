@@ -269,6 +269,7 @@ class MADACLIInterface:
                         self.config.agents, self.config.mcp_servers
                     )
                     print(f"Status: {status}")
+                    print(f"Orchestration mode: {self.orchestration_config.mode}")
                     print(
                         f"Model: {self.config.model.model} from {self.config.model.provider}"
                     )

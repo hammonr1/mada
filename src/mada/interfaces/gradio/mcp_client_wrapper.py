@@ -119,6 +119,9 @@ class MCPGradioClientSession:
                 mcp_servers=self.mcp_servers,  # Placeholder for MCP server config, replace with real config when available
             )
             LOG.info("Orchestrator initialization complete!")
+            status_msg = (
+                f"Orchestration mode: {self.orchestration_config.mode} | {status_msg}"
+            )
 
             agent_dict = cycle_through_tools(self.orchestrator.specialist_agents)
             configured_participants = self.orchestration_config.participants
