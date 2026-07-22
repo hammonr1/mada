@@ -30,6 +30,10 @@ LOG = logging.getLogger(__name__)
 class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
     """
     Planning-agent-plus-`as_tool()` orchestration.
+
+    This strategy initializes specialist agents first, exposes them to the
+    planning agent as callable tools, and then creates the session from the
+    planning agent.
     """
 
     mode = "agent-as-tool"
@@ -39,6 +43,13 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         orchestrator: "MADAOrchestrator",
         participant_configs: List[AgentConfig],
     ) -> Tuple[List[str], List[Dict[str, str]], List[str]]:
+        """
+        Initialize each configured specialist agent for this orchestration run.
+
+        Agents are connected through named MCP servers when available, fall back
+        to the legacy `server_path` mode when configured, or are created as
+        model-only agents when no tools are defined.
+        """
         all_tools = []
         failed_servers = []
         failed_agents = []
@@ -81,6 +92,12 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         failed_servers: List[Dict[str, str]],
         failed_agents: List[str],
     ) -> None:
+        """
+        Connect one agent through its named MCP server definitions.
+
+        Successful tool names are appended to `all_tools`, while partial or full
+        connection failures are recorded in `failed_servers` and `failed_agents`.
+        """
         try:
             (
                 agent,
@@ -130,6 +147,12 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         all_tools: List[str],
         failed_agents: List[str],
     ) -> None:
+        """
+        Connect one legacy agent directly from its configured `server_path`.
+
+        This preserves backward compatibility for older single-script MCP server
+        definitions that predate the shared `mcp_servers` configuration block.
+        """
         try:
             is_python = config.server_path.endswith(".py")
             command = sys.executable if is_python else "node"
@@ -162,6 +185,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         config: AgentConfig,
         failed_agents: List[str],
     ) -> None:
+        """
+        Create an agent that relies only on the model client and no MCP tools.
+        """
         LOG.info(f"Creating agent {config.agent_name} without MCP tools")
         try:
             orchestrator._agent_descriptions[config.agent_name] = config.description
@@ -176,6 +202,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         orchestrator: "MADAOrchestrator",
         participant_configs: List[AgentConfig],
     ) -> List[AgentConfig]:
+        """
+        Return configs for specialists that were successfully initialized.
+        """
         active_specialist_names = {
             agent.name for agent in orchestrator.specialist_agents
         }
@@ -191,6 +220,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         agent_configs: List[AgentConfig],
         active_participant_configs: List[AgentConfig],
     ) -> None:
+        """
+        Create the planning agent and open the orchestration session.
+        """
         orchestrator.planning_agent = orchestrator._create_planning_agent(
             agent_configs=agent_configs,
             participant_configs=active_participant_configs,
@@ -203,6 +235,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         failed_servers: List[Dict[str, str]],
         failed_agents: List[str],
     ) -> str:
+        """
+        Build a user-facing initialization summary for the current run.
+        """
         status_parts = [
             (
                 "Connection Successful: Orchestrator initialized with "
@@ -234,6 +269,13 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         agent_configs: List[AgentConfig],
         mcp_servers: Dict[str, MCPServerConfig] | None = None,
     ) -> Tuple[str, List[str]]:
+        """
+        Initialize the agent-as-tool orchestration flow end to end.
+
+        The strategy resets orchestrator state, initializes participating
+        specialists, creates the planning agent around the successfully active
+        specialists, and returns a connection summary plus discovered tools.
+        """
         orchestrator.specialist_agents = []
         orchestrator._mcp_tool_count = 0
         participant_configs = orchestrator.resolve_participant_configs(agent_configs)
