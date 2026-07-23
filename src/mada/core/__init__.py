@@ -36,6 +36,7 @@ from mada.core.config import (
     load_model_config,
     load_orchestration_config,
 )
+from mada.core.background_tasks import BackgroundTaskManager
 from mada.core.coordinator import MCPAgentManager
 from mada.core.orchestrator import MADAOrchestrator
 
@@ -46,6 +47,7 @@ __all__ = [
     "BaseModelConfig",
     "BedrockAdapter",
     "BedrockModelConfig",
+    "BackgroundTaskManager",
     "DatabaseConfig",
     "InterfaceConfig",
     "LivAIAdapter",

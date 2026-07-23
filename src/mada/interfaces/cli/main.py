@@ -18,10 +18,8 @@ from mada.core.config import AppConfig, OrchestrationConfig, load_config_from_js
 from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
 
-try:
-    BaseExceptionGroup
-except NameError:
-    BaseExceptionGroup = Exception  # fallback for type checkers/runtime
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
 
 
 class MADACLIInterface:
@@ -32,14 +30,17 @@ class MADACLIInterface:
     providing a clean separation between UI and core functionality.
     """
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, blocking: bool = False):
         """
         Initialize the CLI with configuration.
 
         Args:
             config: Application configuration
+            blocking: If True, wait for each response inline. If False,
+                submit queries in the background and return to the prompt.
         """
         self.config = config
+        self.blocking = blocking
         self.orchestrator = None
         self.session_manager = ChatSessionManager(config.database)
 
@@ -297,28 +298,63 @@ class MADACLIInterface:
                 print("\nChat with the agents (type 'quit' to exit)")
                 print("-" * 50)
 
+                prompt_session = PromptSession()
+
                 # Interactive chat loop
                 while True:
                     try:
-                        user_input = input("\nYou: ").strip()
+                        with patch_stdout():
+                            user_input = (
+                                await prompt_session.prompt_async("\nYou: ")
+                            ).strip()
 
                         if user_input.lower() in ["quit", "exit", "q"]:
+                            pending_count = await orchestrator.background_tasks.count_pending_tasks()
+                            if pending_count:
+                                print(
+                                    f"\nExiting with {pending_count} pending background task(s)."
+                                )
                             print("\nGoodbye!")
                             break
 
                         if not user_input:
                             continue
 
+                        if not self.blocking and user_input.lower() == "tasks":
+                            task_snapshot = (
+                                await orchestrator.background_tasks.get_task_snapshot()
+                            )
+                            pending = []
+                            finished = []
+                            for task_id, task in task_snapshot.items():
+                                status = task.get("status", "unknown")
+                                tool_name = task.get("tool_name", "unknown tool")
+                                task_type = task.get("type", "task")
+                                line = f"{task_id}: {status}, {task_type}, tool={tool_name}"
+                                if status in ("pending", "running"):
+                                    pending.append(line)
+                                else:
+                                    finished.append(line)
+
+                            print("\nPending tasks:")
+                            for line in pending:
+                                print(f"  - {line}")
+                            if not pending:
+                                print("  none")
+
+                            print("Finished tasks:")
+                            for line in finished:
+                                print(f"  - {line}")
+                            if not finished:
+                                print("  none")
+                            continue
+
                         print("\nAgents:")
                         print("-" * 20)
 
-                        # Process message through orchestrator
-                        async for response_chunk in orchestrator.process_message(
-                            user_input
-                        ):
-                            print(response_chunk, end="", flush=True)
-
-                        print("\n")
+                        await orchestrator.background_tasks.run_query(
+                            user_input, blocking=self.blocking
+                        )
 
                     except KeyboardInterrupt:
                         print("\n\nGoodbye!")
@@ -347,19 +383,20 @@ class MADACLIInterface:
         # Note: Cleanup is handled automatically by the 'async with' context manager
 
 
-async def async_main(config_file: str):
+async def async_main(config_file: str, blocking: bool = False):
     """
     Async main entry point for CLI.
 
     Args:
         config_file: The path to the MADA configuration file.
+        blocking: If True, process one query at a time.
     """
     try:
         # Load configuration
         config = load_config_from_json(config_file)
 
         # Run CLI
-        cli = MADACLIInterface(config)
+        cli = MADACLIInterface(config, blocking=blocking)
         await cli.run()
 
     except FileNotFoundError:
@@ -380,13 +417,18 @@ async def async_main(config_file: str):
     "config_file",
     type=str,
 )
-def main(config_file: str) -> None:
+@click.option(
+    "--blocking",
+    is_flag=True,
+    help="Process one query at a time instead of running queries in the background.",
+)
+def main(config_file: str, blocking: bool) -> None:
     """
     Run MADA in CLI mode.
 
     CONFIG_FILE is the path to the MADA configuration file.
     """
-    asyncio.run(async_main(config_file))
+    asyncio.run(async_main(config_file, blocking=blocking))
 
 
 if __name__ == "__main__":
