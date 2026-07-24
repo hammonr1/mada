@@ -267,6 +267,38 @@ Or, you can instead provide each setting individually:
 }
 ```
 
+## (Optional) Skills Configuration
+
+Use `skill_paths` to tell MADA where to discover manifest-based skills at startup.
+
+Each entry in `skill_paths` is a directory that contains one or more skill folders. A skill folder must include a `SKILL.md` manifest. Relative paths are resolved relative to the configuration file location.
+
+### Fields
+
+| Field Name    | Description                                                                 | Required? | Default |
+| ------------- | --------------------------------------------------------------------------- | --------- | ------- |
+| `skill_paths` | List of directories to scan for manifest-based skills.                      | No        | `[]`    |
+
+### Example
+
+```json
+"skill_paths": [
+    "../skills"
+],
+```
+
+If your configuration file is stored at `configs/orchestrator_config.json`, then `../skills` resolves to the repository's `skills/` directory.
+
+### How Skills Are Used
+
+When skills are configured:
+
+- MADA discovers each `SKILL.md` at startup.
+- The planner sees only the skill `name` and `description` until a skill becomes relevant.
+- The full markdown body is loaded on demand through the `load_skill` tool.
+- Skills may also expose `read_skill_resource` and `run_skill_script` when the skill contents and manifest policy allow them.
+
+
 ## (Optional) Gradio Interface Configuration
 
 If you are running MADA in [Gradio mode](./usage/gradio.md), you can customize the appearance and behavior of the web interface using the Gradio interface configuration. This includes the interface title, description, chat input placeholder, and layout options.
