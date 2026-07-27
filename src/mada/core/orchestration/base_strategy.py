@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 class BaseOrchestrationStrategy(ABC):
     """
     Internal strategy boundary for orchestrator initialization patterns.
+
+    Concrete strategies encapsulate the setup flow for a specific orchestration
+    mode, including which agents participate, how tools are connected, and how
+    the orchestrator session is initialized.
     """
 
     mode: str = ""
@@ -28,5 +32,15 @@ class BaseOrchestrationStrategy(ABC):
         agent_configs: List[AgentConfig],
         mcp_servers: Dict[str, MCPServerConfig] | None = None,
     ) -> Tuple[str, List[str]]:
-        """Initialize the orchestrator for the strategy's orchestration mode."""
+        """
+        Initialize the orchestrator for the strategy's orchestration mode.
+
+        Args:
+            orchestrator: Orchestrator instance being configured.
+            agent_configs: Agent definitions available to the strategy.
+            mcp_servers: Named MCP server definitions available to the strategy.
+
+        Returns:
+            A user-facing status message and a flat list of connected tool names.
+        """
         pass

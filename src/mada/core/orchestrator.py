@@ -10,18 +10,21 @@ using the Planning Agent + Agent-as-Tool pattern.
 """
 
 import asyncio
+import copy
 import logging
 import sys
 import traceback
 from types import TracebackType
-from typing import Any, Dict, List, Optional, Tuple, Type, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Type
 from contextlib import AsyncExitStack
 from collections.abc import AsyncIterable
 import httpx
 import httpcore
 
-from agent_framework import Agent, MCPStdioTool, MCPStreamableHTTPTool
+from agent_framework import Agent, AgentSession, MCPStdioTool, MCPStreamableHTTPTool
 from agent_framework.exceptions import ToolException
+
+from mada.core.background_tasks import BackgroundTaskManager
 
 try:
     from agent_framework import MagenticBuilder
@@ -44,11 +47,6 @@ from mada.core.config import (
 )
 from mada.core.coordinator import MCPAgentManager
 from mada.core.database import ChatSessionManager
-
-try:
-    BaseExceptionGroup
-except NameError:
-    BaseExceptionGroup = Exception  # fallback for type checkers/runtime
 
 
 LOG = logging.getLogger(__name__)
@@ -165,6 +163,8 @@ class MADAOrchestrator(MCPAgentManager):
         mcp_servers (Dict[str, MCPServerConfig]): A dictionary store of MCP server configurations
         session_manager (ChatSessionManager): The high-level API for interacting
             with the database.
+        background_tasks (BackgroundTaskManager): Manager for non-blocking user
+            queries and MCP server-side background task polling.
     """
 
     def __init__(
@@ -187,6 +187,9 @@ class MADAOrchestrator(MCPAgentManager):
             bearer_token: Optional token forwarded to streamable HTTP MCP
                 servers as `X-Token`.
             timeout: Timeout in seconds for server operations.
+
+        Raises:
+            Exception: Propagates session manager initialization failures.
         """
         super().__init__(model_config, timeout)
         self.exit_stack = AsyncExitStack()
@@ -195,6 +198,11 @@ class MADAOrchestrator(MCPAgentManager):
         self.manager_agent = None
         self.mcp_servers = {}
         self.session = None
+        self._session_lock = asyncio.Lock()
+        self._next_turn_id = 1
+        self._next_turn_commit_id = 1
+        self._completed_turns: Dict[int, Dict[str, Any]] = {}
+        self._mcp_tools_by_server: Dict[str, Any] = {}
         self._agent_descriptions = {}
         self._mcp_tool_count = 0
         self.orchestration = orchestration_config or OrchestrationConfig()
@@ -203,6 +211,11 @@ class MADAOrchestrator(MCPAgentManager):
         )
         # Initialize the database
         self.session_manager = session_manager or ChatSessionManager(database_config)
+        self.background_tasks = BackgroundTaskManager(
+            self.session_manager,
+            self._mcp_tools_by_server,
+            self.collect_message_response,
+        )
         # Authentication bearer token
         self.bearer_token = bearer_token
 
@@ -645,6 +658,7 @@ class MADAOrchestrator(MCPAgentManager):
                 mcp_tool = await self.exit_stack.enter_async_context(mcp_tool)
                 all_tools.append(mcp_tool)
                 all_tool_names.append(server_name)
+                self._mcp_tools_by_server[server_name] = mcp_tool
                 LOG.info(f"✓ Successfully connected to MCP server: {server_name}")
             except asyncio.CancelledError:
                 # Connection was cancelled - properly close the tool to cleanup async generators
@@ -1273,15 +1287,28 @@ Guidelines:
             traceback.print_exc()
             yield error_msg
 
-    async def process_message(self, message: str) -> AsyncGenerator[str, None]:
+    async def process_message(
+        self,
+        message: str,
+        isolated_session: bool = False,
+    ) -> AsyncGenerator[str, None]:
         """
         Process a user message through the planning agent.
 
-        The planning agent routes to specialist agents as needed using the as_tool() pattern.
-        AgentSession maintains conversation context across messages.
+        The planning agent routes to specialist agents as needed using the
+        as_tool() pattern. Each request runs on a copy of the active session so
+        overlapping UI requests do not mutate shared chat state mid-stream.
 
         Args:
             message: User input message.
+            isolated_session: If True, use a fresh agent session instead of a
+                copy of the shared orchestrator session. This is used for
+                overlapping background work so concurrent queries do not share
+                or mutate the same agent conversation state while another turn
+                is still running. This is more conservative than append-only
+                transcript merging because `AgentSession` can contain
+                provider-specific state beyond messages, and an overlapping turn
+                cannot see the unfinished turn's eventual result.
 
         Yields:
             Response text chunks from the planning agent, plus bracketed tool
@@ -1321,12 +1348,28 @@ Guidelines:
             return
 
         aggregated_assistant_reply = ""
+        tool_calls = []
+        response_started = False
 
         try:
-            # Store the user message in the database
-            self.session_manager.add_message("user", message)
+            turn_id, run_session, history_lengths = await self._create_run_session(
+                isolated_session
+            )
 
             # Stream responses from the planning agent with conversation context
+            stream = self.planning_agent.run(message, session=run_session, stream=True)
+            async for chunk in stream:
+                if chunk.text:
+                    response_started = True
+                    aggregated_assistant_reply += chunk.text
+                    yield chunk.text
+                    continue
+
+                for notice in self._tool_call_notices_from_chunk(chunk, tool_calls):
+                    yield notice
+
+            if not response_started:
+                LOG.warning("No text chunks received from planning agent")
             async for chunk in self._stream_agent_as_tool_response(
                 message,
                 session=self.session,
@@ -1338,51 +1381,363 @@ Guidelines:
                     aggregated_assistant_reply += chunk
                 yield chunk
 
-            if aggregated_assistant_reply.strip():
-                self.session_manager.add_message(
-                    "assistant", aggregated_assistant_reply
-                )
+            if isolated_session:
+                self._persist_isolated_response(message, aggregated_assistant_reply)
+                return
+
+            await self._commit_completed_turn(
+                turn_id,
+                message,
+                aggregated_assistant_reply,
+                run_session,
+                history_lengths,
+            )
 
         except Exception as e:
-            # Check for authentication errors
-            error_str = str(e)
-            if (
-                " 401" in error_str
-                or error_str.startswith("401")
-                or "Authentication" in error_str
-                or "auth_error" in error_str
+            yield self._process_message_error(e)
+
+    @staticmethod
+    def _process_message_error(error: Exception) -> str:
+        """
+        Format and log a message-processing error.
+
+        Args:
+            error: Exception raised while processing a user message.
+
+        Returns:
+            User-facing error message.
+        """
+        error_str = str(error)
+        is_auth_error = (
+            " 401" in error_str
+            or error_str.startswith("401")
+            or "Authentication" in error_str
+            or "auth_error" in error_str
+        )
+
+        if not is_auth_error:
+            error_msg = f"Error processing message: {error}"
+            LOG.error(error_msg)
+            traceback.print_exc()
+            return error_msg
+
+        if "${" in error_str and "}" in error_str:
+            error_msg = (
+                "\n  AUTHENTICATION ERROR: API key not set correctly\n\n"
+                "Your API key appears to be an unexpanded environment variable.\n\n"
+                "Problem: The configuration contains '${VARIABLE_NAME}' but the environment variable is not set.\n\n"
+                "Solutions:\n"
+                "  1. Set the environment variable before running:\n"
+                "     export ANTHROPIC_API_KEY='your-api-key-here'\n"
+                "     (or whichever variable name is in your config)\n\n"
+                "  2. Or update your config file to use the actual API key directly\n\n"
+                f"Details: {error_str}\n"
+            )
+        else:
+            error_msg = (
+                "\n  AUTHENTICATION ERROR: Invalid API key\n\n"
+                "The API key provided is not valid or is in the wrong format.\n\n"
+                "Solutions:\n"
+                "  1. Check that your API key is correct\n"
+                "  2. Verify the key format matches what the service expects\n"
+                "  3. Ensure the API key has not expired\n\n"
+                f"Details: {error_str}\n"
+            )
+
+        LOG.error(error_msg)
+        return error_msg
+
+    async def _create_run_session(
+        self,
+        isolated_session: bool,
+    ) -> Tuple[Optional[int], AgentSession, Dict[str, int]]:
+        """
+        Create the agent session used for one message turn.
+
+        Args:
+            isolated_session: If True, create a fresh session. Otherwise, copy
+                the shared orchestrator session and reserve a turn ID for later
+                ordered commit.
+
+        Returns:
+            Tuple containing the turn ID, the run session, and provider message
+            history lengths captured before streaming.
+
+        Raises:
+            RuntimeError: If the shared orchestrator session is not initialized.
+        """
+        if isolated_session:
+            return None, self.planning_agent.create_session(), {}
+
+        async with self._session_lock:
+            if self.session is None:
+                raise RuntimeError("Orchestrator session not initialized.")
+
+            turn_id = self._next_turn_id
+            self._next_turn_id += 1
+            run_session = AgentSession.from_dict(self.session.to_dict())
+            history_lengths = self._provider_message_lengths(run_session)
+
+        return turn_id, run_session, history_lengths
+
+    @staticmethod
+    def _provider_message_lengths(session: AgentSession) -> Dict[str, int]:
+        """
+        Capture provider message counts before a turn streams.
+
+        Args:
+            session: Agent session whose provider state should be inspected.
+
+        Returns:
+            Mapping of provider name to the initial message count.
+        """
+        history_lengths = {}
+        for provider_name, provider_state in session.state.items():
+            if isinstance(provider_state, dict) and isinstance(
+                provider_state.get("messages"), list
             ):
-                # Check if it's an unexpanded environment variable
-                if "${" in error_str and "}" in error_str:
-                    error_msg = (
-                        "\n  AUTHENTICATION ERROR: API key not set correctly\n\n"
-                        "Your API key appears to be an unexpanded environment variable.\n\n"
-                        "Problem: The configuration contains '${VARIABLE_NAME}' but the environment variable is not set.\n\n"
-                        "Solutions:\n"
-                        "  1. Set the environment variable before running:\n"
-                        "     export ANTHROPIC_API_KEY='your-api-key-here'\n"
-                        "     (or whichever variable name is in your config)\n\n"
-                        "  2. Or update your config file to use the actual API key directly\n\n"
-                        f"Details: {error_str}\n"
-                    )
-                else:
-                    error_msg = (
-                        "\n  AUTHENTICATION ERROR: Invalid API key\n\n"
-                        "The API key provided is not valid or is in the wrong format.\n\n"
-                        "Solutions:\n"
-                        "  1. Check that your API key is correct\n"
-                        "  2. Verify the key format matches what the service expects\n"
-                        "  3. Ensure the API key has not expired\n\n"
-                        f"Details: {error_str}\n"
-                    )
-                LOG.error(error_msg)
-                yield error_msg
-            else:
-                # Generic error handling
-                error_msg = f"Error processing message: {e}"
-                LOG.error(error_msg)
-                traceback.print_exc()
-                yield error_msg
+                history_lengths[provider_name] = len(provider_state["messages"])
+        return history_lengths
+
+    @staticmethod
+    def _tool_call_notices_from_chunk(chunk: Any, tool_calls: List[Any]) -> List[str]:
+        """
+        Return tool-call notices for first appearances of tool calls in a chunk.
+
+        Args:
+            chunk: Streaming response chunk from the planning agent.
+            tool_calls: Mutable list of already reported tool call IDs or names.
+
+        Returns:
+            Formatted tool-call notices for new tool calls in the chunk.
+        """
+        if not hasattr(chunk, "contents") or not chunk.contents:
+            return []
+
+        notices = []
+        for content in chunk.contents:
+            if not hasattr(content, "to_dict"):
+                continue
+
+            item = content.to_dict()
+            if item.get("type") not in ("function_call", "tool_call"):
+                continue
+
+            name = item.get("name")
+            if not name:
+                continue
+
+            call_id = item.get("call_id")
+            call_key = call_id or name
+            if call_key in tool_calls:
+                continue
+
+            tool_calls.append(call_key)
+            notices.append(f"\n[Calling: {name}]\n")
+
+        return notices
+
+    def _persist_isolated_response(
+        self,
+        message: str,
+        assistant_reply: str,
+    ) -> None:
+        """
+        Persist a response produced from an isolated agent session.
+
+        Args:
+            message: User message for the isolated turn.
+            assistant_reply: Aggregated assistant response text.
+
+        Returns:
+            None.
+
+        Raises:
+            Exception: Propagates database persistence failures.
+        """
+        if not self.background_tasks.user_message_already_started_background_task(
+            message
+        ):
+            self.session_manager.add_message("user", message)
+        if assistant_reply.strip():
+            self.session_manager.add_message("assistant", assistant_reply)
+
+        self.background_tasks.start_background_tool_poll_from_reply_if_needed(
+            assistant_reply
+        )
+
+    async def _commit_completed_turn(
+        self,
+        turn_id: Optional[int],
+        message: str,
+        assistant_reply: str,
+        run_session: AgentSession,
+        history_lengths: Dict[str, int],
+    ) -> None:
+        """
+        Queue and commit a completed shared-session turn in turn order.
+
+        Args:
+            turn_id: Reserved turn ID for this completed turn.
+            message: User message for the completed turn.
+            assistant_reply: Aggregated assistant response text.
+            run_session: Agent session used to process the turn.
+            history_lengths: Provider message counts captured before streaming.
+
+        Returns:
+            None.
+
+        Raises:
+            RuntimeError: If the shared orchestrator session is not initialized.
+            Exception: Propagates database persistence failures.
+        """
+        if turn_id is None:
+            raise RuntimeError("Cannot commit an isolated turn to shared session.")
+
+        async with self._session_lock:
+            if self.session is None:
+                raise RuntimeError("Orchestrator session not initialized.")
+
+            self._completed_turns[turn_id] = {
+                "message": message,
+                "assistant_reply": assistant_reply,
+                "run_session": run_session,
+                "history_lengths": history_lengths,
+            }
+
+            while self._next_turn_commit_id in self._completed_turns:
+                completed = self._completed_turns.pop(self._next_turn_commit_id)
+                self._merge_completed_session(
+                    completed["run_session"], completed["history_lengths"]
+                )
+                self._persist_completed_turn(completed)
+                self._next_turn_commit_id += 1
+
+    def _merge_completed_session(
+        self,
+        completed_session: AgentSession,
+        history_lengths: Dict[str, int],
+    ) -> None:
+        """
+        Merge one completed run session into the shared orchestrator session.
+
+        Args:
+            completed_session: Agent session used by the completed turn.
+            history_lengths: Provider message counts captured before streaming.
+
+        Returns:
+            None.
+
+        Raises:
+            RuntimeError: If the shared orchestrator session is not initialized.
+        """
+        if self.session is None:
+            raise RuntimeError("Orchestrator session not initialized.")
+
+        for provider_name, source_state in completed_session.state.items():
+            if not isinstance(source_state, dict):
+                self.session.state[provider_name] = copy.deepcopy(source_state)
+                continue
+
+            target_state = self.session.state.setdefault(provider_name, {})
+            if not isinstance(target_state, dict):
+                target_state = {}
+                self.session.state[provider_name] = target_state
+
+            source_messages = source_state.get("messages")
+            if isinstance(source_messages, list):
+                start_index = history_lengths.get(provider_name, 0)
+                delta_messages = source_messages[start_index:]
+                if delta_messages:
+                    target_messages = target_state.setdefault("messages", [])
+                    if not isinstance(target_messages, list):
+                        target_messages = []
+                        target_state["messages"] = target_messages
+                    target_messages.extend(copy.deepcopy(delta_messages))
+
+            for key, value in source_state.items():
+                if key != "messages":
+                    target_state[key] = copy.deepcopy(value)
+
+        if completed_session.service_session_id:
+            self.session.service_session_id = completed_session.service_session_id
+
+    def _persist_completed_turn(self, completed: Dict[str, Any]) -> None:
+        """
+        Persist one completed shared-session turn and start MCP polling if needed.
+
+        Args:
+            completed: Completed turn metadata from `_completed_turns`.
+
+        Returns:
+            None.
+
+        Raises:
+            Exception: Propagates database persistence failures.
+        """
+        message = completed["message"]
+        assistant_reply = completed["assistant_reply"]
+
+        if not self.background_tasks.user_message_already_started_background_task(
+            message
+        ):
+            self.session_manager.add_message("user", message)
+        if assistant_reply.strip():
+            self.session_manager.add_message("assistant", assistant_reply)
+
+        self.background_tasks.start_background_tool_poll_from_reply_if_needed(
+            assistant_reply
+        )
+
+    async def collect_message_response(
+        self,
+        message: str,
+        isolated_session: bool = False,
+        first_tool_call: Optional[asyncio.Event] = None,
+        first_tool_state: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """
+        Collect a streamed assistant response into a single string.
+
+        Args:
+            message: User message to process through the planning agent.
+            isolated_session: If True, process the message with a fresh agent
+                session instead of the shared orchestrator session. This is used
+                for overlapping background work so concurrent queries do not
+                share or mutate the same agent conversation state while another
+                turn is still running. This is more conservative than
+                append-only transcript merging because `AgentSession` can carry
+                provider-specific state beyond messages, and an overlapping turn
+                cannot include another unfinished turn's eventual result in its
+                context.
+            first_tool_call: Optional event set when the streamed response first
+                reports a tool call.
+            first_tool_state: Optional mutable mapping populated with the first
+                tool call name under the `name` key.
+
+        Returns:
+            Concatenated assistant response text, including any tool-call notices
+            yielded by `process_message`.
+
+        Raises:
+            Exception: Propagates unexpected failures from `process_message`.
+        """
+        response_chunks = []
+        async for response_chunk in self.process_message(
+            message,
+            isolated_session=isolated_session,
+        ):
+            response_chunks.append(response_chunk)
+            if (
+                first_tool_call
+                and first_tool_state is not None
+                and response_chunk.startswith("\n[Calling:")
+            ):
+                first_tool_state["name"] = (
+                    response_chunk.strip()[len("[Calling:") :].rstrip("]").strip()
+                )
+                first_tool_call.set()
+        return "".join(response_chunks)
 
     async def cleanup(self) -> None:
         """
@@ -1392,11 +1747,16 @@ Guidelines:
             `None`.
         """
         try:
+            await self.background_tasks.cleanup()
             await self.exit_stack.aclose()
             self.specialist_agents.clear()
             self.planning_agent = None
             self.manager_agent = None
             self.session = None
+            self._completed_turns.clear()
+            self._next_turn_id = 1
+            self._next_turn_commit_id = 1
+            self._mcp_tools_by_server.clear()
             self._agent_descriptions.clear()
             LOG.info("Orchestrator cleanup completed")
         except BaseExceptionGroup as eg:
