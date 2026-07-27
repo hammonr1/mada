@@ -14,7 +14,13 @@ from typing import Any, AsyncGenerator, Dict, List, Tuple
 
 import gradio as gr
 
-from mada.core.config import AgentConfig, DatabaseConfig, MCPServerConfig, ModelConfig
+from mada.core.config import (
+    AgentConfig,
+    DatabaseConfig,
+    MCPServerConfig,
+    ModelConfig,
+    OrchestrationConfig,
+)
 from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
 from mada.interfaces.gradio.utils import create_agent_table, cycle_through_tools
@@ -36,6 +42,7 @@ class MCPGradioClientSession:
         agents: List[AgentConfig],
         database_config: DatabaseConfig,
         mcp_servers: MCPServerConfig = None,
+        orchestration_config: OrchestrationConfig = None,
         blocking: bool = False,
     ):
         """
@@ -54,6 +61,7 @@ class MCPGradioClientSession:
         self.orchestrator = None
         self.initialized = False
         self.mcp_servers = mcp_servers or {}
+        self.orchestration_config = orchestration_config or OrchestrationConfig()
         self.session_manager = ChatSessionManager(database_config)
         self.session_bearer_token = None  # Store session bearer token
 
@@ -92,6 +100,7 @@ class MCPGradioClientSession:
                     self.model_config,
                     self.database_config,
                     session_manager=self.session_manager,
+                    orchestration_config=self.orchestration_config,
                     bearer_token=self.session_bearer_token,
                 )
                 # Enter the async context manager (required for proper setup)
@@ -108,11 +117,29 @@ class MCPGradioClientSession:
                 mcp_servers=self.mcp_servers,  # Placeholder for MCP server config, replace with real config when available
             )
             LOG.info("Orchestrator initialization complete!")
+            status_msg = (
+                f"Orchestration mode: {self.orchestration_config.mode} | {status_msg}"
+            )
 
             agent_dict = cycle_through_tools(self.orchestrator.specialist_agents)
+            configured_participants = self.orchestration_config.participants
+            if configured_participants is None:
+                active_agents = [
+                    agent for agent in self.agents if agent.agent_name in agent_dict
+                ]
+                table_agents = active_agents or self.agents
+                table_agent_dict = agent_dict if active_agents else None
+            else:
+                table_agents = [
+                    agent
+                    for agent in self.agents
+                    if agent.agent_name in configured_participants
+                    and agent.agent_name in agent_dict
+                ]
+                table_agent_dict = agent_dict
             self.initialized = True
             return gr.Button(status_msg, elem_id="green_btn"), create_agent_table(
-                self.agents, agent_dict
+                table_agents, table_agent_dict
             )
 
         except BaseExceptionGroup as eg:
