@@ -4,40 +4,31 @@
 """
 Core orchestration logic for MADA multi-agent system.
 
-This module contains the main orchestration logic extracted from the interface layers.
-It manages MCP server connections, agent creation, and Agent Framework coordination
-using the Planning Agent + Agent-as-Tool pattern.
+This module contains the shared orchestration runtime extracted from the
+interface layers. It owns MCP server connections, agent creation, session
+persistence, and strategy selection. Mode-specific request handling lives in
+`mada.core.orchestration`.
 """
 
 import asyncio
 import copy
 import logging
-import sys
 import traceback
 from types import TracebackType
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Type
 from contextlib import AsyncExitStack
-from collections.abc import AsyncIterable
 import httpx
 import httpcore
 
-from agent_framework import Agent, AgentSession, MCPStdioTool, MCPStreamableHTTPTool
+from agent_framework import (
+    Agent,
+    AgentSession,
+    MCPStdioTool,
+    MCPStreamableHTTPTool,
+)
 from agent_framework.exceptions import ToolException
 
 from mada.core.background_tasks import BackgroundTaskManager
-
-try:
-    from agent_framework import MagenticBuilder
-except ImportError:  # pragma: no cover - depends on installed agent framework version
-    try:
-        from agent_framework.orchestrations import (  # type: ignore[attr-defined]
-            MagenticBuilder,
-        )
-    except (
-        ImportError
-    ):  # pragma: no cover - depends on installed agent framework version
-        MagenticBuilder = None
-
 from mada.core.config import (
     AgentConfig,
     DatabaseConfig,
@@ -47,123 +38,29 @@ from mada.core.config import (
 )
 from mada.core.coordinator import MCPAgentManager
 from mada.core.database import ChatSessionManager
+from mada.core.orchestration import (
+    AgentAsToolOrchestrationStrategy,
+    BaseOrchestrationStrategy,
+    MagenticOrchestrationStrategy,
+)
 
 
 LOG = logging.getLogger(__name__)
 
 
-class BaseOrchestrationStrategy:
-    """
-    Internal strategy boundary for orchestrator initialization patterns.
-    """
-
-    mode: str = ""
-
-    async def initialize(
-        self,
-        orchestrator: "MADAOrchestrator",
-        agent_configs: List[AgentConfig],
-        mcp_servers: Dict[str, MCPServerConfig] | None = None,
-    ) -> Tuple[str, List[str]]:
-        raise NotImplementedError
-
-
-class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
-    """
-    Planning-agent-plus-`as_tool()` orchestration.
-    """
-
-    mode = "agent-as-tool"
-
-    async def initialize(
-        self,
-        orchestrator: "MADAOrchestrator",
-        agent_configs: List[AgentConfig],
-        mcp_servers: Dict[str, MCPServerConfig] | None = None,
-    ) -> Tuple[str, List[str]]:
-        (
-            _participant_configs,
-            active_participant_configs,
-            all_tools,
-            failed_servers,
-            failed_agents,
-        ) = await orchestrator._initialize_specialist_agents(
-            agent_configs=agent_configs,
-            mcp_servers=mcp_servers,
-        )
-
-        orchestrator.planning_agent = orchestrator._create_planning_agent(
-            agent_configs=agent_configs,
-            participant_configs=active_participant_configs,
-        )
-        orchestrator.session = orchestrator.planning_agent.create_session()
-        orchestrator.manager_agent = None
-
-        status = orchestrator._format_initialization_status(
-            failed_servers=failed_servers,
-            failed_agents=failed_agents,
-        )
-        LOG.info(status)
-
-        return status, all_tools
-
-
-class MagenticOrchestrationStrategy(BaseOrchestrationStrategy):
-    """
-    Peer specialist group chat coordinated by a hidden manager agent.
-    """
-
-    mode = "magentic"
-
-    async def initialize(
-        self,
-        orchestrator: "MADAOrchestrator",
-        agent_configs: List[AgentConfig],
-        mcp_servers: Dict[str, MCPServerConfig] | None = None,
-    ) -> Tuple[str, List[str]]:
-        (
-            _participant_configs,
-            active_participant_configs,
-            all_tools,
-            failed_servers,
-            failed_agents,
-        ) = await orchestrator._initialize_specialist_agents(
-            agent_configs=agent_configs,
-            mcp_servers=mcp_servers,
-        )
-
-        if not active_participant_configs:
-            raise RuntimeError(
-                "Magentic orchestration requires at least one active specialist agent."
-            )
-
-        orchestrator.planning_agent = None
-        orchestrator.session = None
-        orchestrator.manager_agent = orchestrator._create_magentic_manager_agent(
-            agent_configs=agent_configs,
-            participant_configs=active_participant_configs,
-        )
-
-        status = orchestrator._format_initialization_status(
-            failed_servers=failed_servers,
-            failed_agents=failed_agents,
-        )
-        LOG.info(status)
-
-        return status, all_tools
-
-
 class MADAOrchestrator(MCPAgentManager):
     """
     Core orchestrator for MADA multi-agent system.
-    Manages MCP server connections, agent creation, and planning agent coordination
-    using the Agent Framework's Planning Agent + Agent-as-Tool pattern.
-    This class contains the core logic extracted from interface-specific implementations.
+
+    Manages MCP server connections, agent creation, shared session state, and
+    persistence. Concrete orchestration behavior is delegated to the configured
+    strategy so mode-specific logic stays out of this shared runtime.
 
     Attributes:
         exit_stack (AsyncExitStack): Context manager for server connections
         specialist_agents (List[Agent]): Specialist agents in the session
-        planning_agent (Agent): The planning/coordination agent that routes to specialists
+        planning_agent (Agent): Agent-as-tool planner, when that mode is active.
+        manager_agent (Agent): Hidden Magentic manager, when that mode is active.
         session: AgentSession for maintaining conversation state
         mcp_servers (Dict[str, MCPServerConfig]): A dictionary store of MCP server configurations
         session_manager (ChatSessionManager): The high-level API for interacting
@@ -299,185 +196,13 @@ class MADAOrchestrator(MCPAgentManager):
               "instructions": "You are a planning agent that..."
             }
 
-        This entry is used to customize the planning agent created by the orchestrator.
+        This entry customizes the visible planner in `agent-as-tool` mode and
+        the hidden manager in `magentic` mode.
         """
         for cfg in agent_configs:
             if cfg.agent_name == "PlanningAgent":
                 return cfg
         return None
-
-    async def _initialize_specialist_agents(
-        self,
-        agent_configs: List[AgentConfig],
-        mcp_servers: Dict[str, MCPServerConfig] | None = None,
-    ) -> Tuple[
-        List[AgentConfig],
-        List[AgentConfig],
-        List[str],
-        List[Dict[str, str]],
-        List[str],
-    ]:
-        """
-        Create specialist agents for the configured orchestration participants.
-
-        The connection path is shared across orchestration strategies so MCP
-        setup, legacy `server_path` handling, and active-agent filtering remain
-        identical regardless of how requests are later coordinated.
-        """
-        self.specialist_agents = []
-        self._mcp_tool_count = 0
-        self._agent_descriptions = {}
-        self.mcp_servers = mcp_servers or {}
-
-        all_tools = []
-        failed_servers = []
-        failed_agents = []
-        participant_configs = self.resolve_participant_configs(agent_configs)
-
-        for config in participant_configs:
-            if not config.agent_name:
-                continue
-
-            if config.mcp_servers and self.mcp_servers:
-                try:
-                    (
-                        agent,
-                        mcp_tools,
-                        tool_names,
-                        agent_failed_servers,
-                    ) = await self.connect_agent(config, self.mcp_servers)
-                    self.specialist_agents.append(agent)
-                    self._mcp_tool_count += len(mcp_tools)
-                    all_tools.extend(
-                        [f"{config.agent_name}: {tool}" for tool in tool_names]
-                    )
-
-                    if agent_failed_servers:
-                        for failed_server in agent_failed_servers:
-                            failed_servers.append(
-                                {
-                                    "agent": config.agent_name,
-                                    "server": failed_server["name"],
-                                    "url": failed_server["url"],
-                                    "error": failed_server["error"],
-                                }
-                            )
-
-                    if tool_names:
-                        LOG.info(
-                            f"Connected agent {config.agent_name} with {len(tool_names)} MCP tools"
-                        )
-                    else:
-                        LOG.warning(
-                            f"Agent {config.agent_name} connected but no MCP servers available"
-                        )
-                        if config.mcp_servers:
-                            failed_agents.append(config.agent_name)
-                except BaseExceptionGroup as eg:
-                    LOG.error(
-                        f"Multiple errors connecting agent {config.agent_name} ({len(eg.exceptions)} errors)"
-                    )
-                    failed_agents.append(config.agent_name)
-                    continue
-                except Exception as e:
-                    LOG.error(f"Failed to connect agent {config.agent_name}: {e}")
-                    traceback.print_exc()
-                    failed_agents.append(config.agent_name)
-                    continue
-            elif config.server_path:
-                try:
-                    is_python = config.server_path.endswith(".py")
-                    command = sys.executable if is_python else "node"
-                    args = (
-                        ["-u", config.server_path]
-                        if is_python
-                        else [config.server_path]
-                    )
-                    mcp_tool = MCPStdioTool(
-                        name=f"{config.agent_name}_mcp",
-                        command=command,
-                        args=args,
-                    )
-
-                    mcp_tool = await self.exit_stack.enter_async_context(mcp_tool)
-
-                    self._agent_descriptions[config.agent_name] = config.description
-
-                    agent = await self.create_chat_agent(
-                        config,
-                        tools=[mcp_tool],
-                    )
-
-                    self.specialist_agents.append(agent)
-                    self._mcp_tool_count += 1
-                    all_tools.append(f"{config.agent_name}: {config.server_path}")
-                    LOG.info(
-                        f"Connected legacy agent {config.agent_name} with 1 MCP tool"
-                    )
-                except Exception as e:
-                    LOG.error(
-                        f"Failed to connect legacy agent {config.agent_name}: {e}"
-                    )
-                    failed_agents.append(config.agent_name)
-                    continue
-            elif not config.mcp_servers:
-                LOG.info(f"Creating agent {config.agent_name} without MCP tools")
-                try:
-                    self._agent_descriptions[config.agent_name] = config.description
-                    agent = await self.create_chat_agent(config, tools=[])
-                    self.specialist_agents.append(agent)
-                except Exception as e:
-                    LOG.error(f"Failed to create agent {config.agent_name}: {e}")
-                    failed_agents.append(config.agent_name)
-                    continue
-            else:
-                LOG.warning(f"Agent {config.agent_name} has no MCP servers configured")
-                failed_agents.append(config.agent_name)
-                continue
-
-        active_specialist_names = {agent.name for agent in self.specialist_agents}
-        active_participant_configs = [
-            config
-            for config in participant_configs
-            if config.agent_name in active_specialist_names
-        ]
-
-        return (
-            participant_configs,
-            active_participant_configs,
-            all_tools,
-            failed_servers,
-            failed_agents,
-        )
-
-    def _format_initialization_status(
-        self,
-        failed_servers: List[Dict[str, str]],
-        failed_agents: List[str],
-    ) -> str:
-        coordinator_count = 1 if (self.planning_agent or self.manager_agent) else 0
-        status_parts = [
-            "Connection Successful: Orchestrator initialized with "
-            f"{self._mcp_tool_count} MCP Servers and "
-            f"{len(self.specialist_agents) + coordinator_count} agents"
-        ]
-
-        if failed_servers:
-            status_parts.append(
-                f"\nWARNING: {len(failed_servers)} MCP server(s) failed to connect:"
-            )
-            for failed_server in failed_servers:
-                status_parts.append(
-                    f"  • {failed_server['agent']}/{failed_server['server']} at {failed_server['url']}"
-                )
-                status_parts.append(f"    Error: {failed_server['error']}")
-
-        if failed_agents:
-            status_parts.append(
-                f"\nERROR: {len(failed_agents)} agent(s) failed to initialize: {', '.join(failed_agents)}"
-            )
-
-        return "\n".join(status_parts)
 
     async def _cleanup_http_client(self, http_client, context: str = ""):
         """
@@ -857,81 +582,6 @@ Guidelines:
 
         return planning_agent
 
-    def _create_magentic_manager_agent(
-        self,
-        agent_configs: List[AgentConfig],
-        participant_configs: List[AgentConfig],
-    ) -> Agent:
-        """
-        Create the hidden manager agent used by Magentic orchestration.
-        """
-        team_description = self._generate_team_description(participant_configs)
-        planning_cfg = self._get_planning_agent_config(agent_configs)
-
-        if planning_cfg and planning_cfg.mcp_servers:
-            LOG.warning(
-                "PlanningAgent MCP server support is not implemented. "
-                "MCP servers listed in PlanningAgent config will be ignored."
-            )
-
-        if planning_cfg and planning_cfg.instructions:
-            base_instructions = planning_cfg.instructions.strip()
-        else:
-            base_instructions = """You are the hidden manager for MADA's Magentic orchestration mode.
-
-Coordinate the specialist agents as peers, track plan and progress internally,
-and produce the final response for the user."""
-
-        instructions = f"""{base_instructions}
-
-Specialist participants:
-{team_description}
-
-Guidelines:
-- Coordinate the specialists as a peer conversation
-- Re-plan when the current approach stalls or conflicts
-- Keep internal planning and progress chatter out of the final user-facing answer
-- Produce the final synthesized assistant response for the user
-"""
-
-        agent_kwargs = {}
-        if planning_cfg:
-            agent_kwargs.update(planning_cfg.extra)
-
-        agent_name = planning_cfg.agent_name if planning_cfg else "PlanningAgent"
-        return self.model_client.as_agent(
-            name=agent_name,
-            instructions=instructions,
-            **agent_kwargs,
-        )
-
-    def _create_magentic_builder(self):
-        """
-        Create a fresh Magentic builder for a request.
-        """
-        if MagenticBuilder is None:
-            raise RuntimeError(
-                "Magentic orchestration requires agent_framework MagenticBuilder support"
-            )
-
-        return MagenticBuilder(
-            participants=self.specialist_agents,
-            manager_agent=self.manager_agent,
-        )
-
-    def _build_magentic_runtime(self):
-        """
-        Build a runnable Magentic workflow instance.
-        """
-        builder = self._create_magentic_builder()
-
-        for method_name in ("build", "create_workflow", "create"):
-            method = getattr(builder, method_name, None)
-            if callable(method):
-                return method()
-
-        return builder
-
     def _generate_team_description(self, agent_configs: List[AgentConfig]) -> str:
         """
         Generate formatted team member descriptions.
@@ -1071,236 +721,17 @@ Guidelines:
         """
         return self.build_prompt_from_transcript(messages)
 
-    async def _stream_agent_as_tool_response(
-        self,
-        prompt: str,
-        *,
-        session,
-        include_tool_notices: bool,
-    ) -> AsyncGenerator[str, None]:
-        """
-        Stream output from the reusable planning-agent runtime.
-        """
-        response_started = False
-        tool_calls = []
-        stream = self.planning_agent.run(prompt, session=session, stream=True)
-        async for chunk in stream:
-            if chunk.text:
-                response_started = True
-                yield chunk.text
-                continue
-
-            if not include_tool_notices:
-                continue
-
-            if hasattr(chunk, "contents") and chunk.contents:
-                for content in chunk.contents:
-                    if not hasattr(content, "to_dict"):
-                        continue
-                    item = content.to_dict()
-                    if item.get("type") not in ("function_call", "tool_call"):
-                        continue
-                    name = item.get("name")
-                    call_id = item.get("call_id")
-                    if name and (call_id is None or call_id not in tool_calls):
-                        if call_id:
-                            tool_calls.append(call_id)
-                        yield f"\n[Calling: {name}]\n"
-
-        if not response_started:
-            LOG.warning("No text chunks received from planning agent")
-
-    def _extract_magentic_text(self, payload: Any) -> str:
-        """
-        Best-effort extraction of a final assistant reply from Magentic results.
-        """
-        if payload is None:
-            return ""
-
-        if isinstance(payload, str):
-            return payload
-
-        if isinstance(payload, dict):
-            event_type = str(payload.get("type") or payload.get("event") or "").lower()
-            if event_type in {"plan", "progress", "replan", "checkpoint"}:
-                return ""
-            for key in (
-                "final_output",
-                "final_response",
-                "assistant_response",
-                "response",
-                "output",
-                "content",
-                "text",
-            ):
-                value = payload.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-            if event_type in {"", "output"} and "data" in payload:
-                return self._extract_magentic_text(payload["data"])
-            return ""
-
-        event_type = str(
-            getattr(payload, "type", "") or getattr(payload, "event", "")
-        ).lower()
-        if event_type in {"plan", "progress", "replan", "checkpoint"}:
-            return ""
-
-        for attr in (
-            "final_output",
-            "final_response",
-            "assistant_response",
-            "response",
-            "output",
-            "content",
-            "text",
-        ):
-            value = getattr(payload, attr, None)
-            if isinstance(value, str) and value.strip():
-                return value
-
-        if event_type in {"", "output"} and hasattr(payload, "data"):
-            data = getattr(payload, "data", None)
-            if data is not None:
-                return self._extract_magentic_text(data)
-
-        if hasattr(payload, "to_dict"):
-            try:
-                return self._extract_magentic_text(payload.to_dict())
-            except (TypeError, ValueError):
-                return ""
-
-        return ""
-
-    async def _consume_magentic_result(self, result: Any) -> str:
-        """
-        Consume a Magentic workflow result and return only the final assistant text.
-        """
-        if asyncio.iscoroutine(result):
-            result = await result
-
-        if isinstance(result, AsyncIterable):
-            final_text = ""
-            async for event in result:
-                event_text = self._extract_magentic_text(event)
-                if event_text:
-                    final_text = event_text
-            return final_text
-
-        if hasattr(result, "__iter__") and not isinstance(result, (str, dict)):
-            final_text = ""
-            for event in result:
-                event_text = self._extract_magentic_text(event)
-                if event_text:
-                    final_text = event_text
-            return final_text
-
-        return self._extract_magentic_text(result)
-
-    async def _run_magentic_workflow(
-        self,
-        transcript_messages: List[Dict[str, Any]],
-    ) -> str:
-        """
-        Run a fresh Magentic workflow from a rebuilt transcript.
-        """
-        if not self.manager_agent:
-            raise RuntimeError("Magentic manager is not initialized.")
-
-        runtime = self._build_magentic_runtime()
-        prompt = self.build_prompt_from_transcript(transcript_messages)
-
-        for method_name in ("run_stream", "stream", "run", "invoke"):
-            method = getattr(runtime, method_name, None)
-            if not callable(method):
-                continue
-
-            try:
-                if method_name in {"run_stream", "stream"}:
-                    return await self._consume_magentic_result(method(prompt))
-                return await self._consume_magentic_result(method(prompt))
-            except TypeError:
-                # Some versions accept transcript messages instead of a flattened prompt.
-                if method_name in {"run_stream", "stream"}:
-                    return await self._consume_magentic_result(
-                        method(
-                            messages=self._normalize_transcript_messages(
-                                transcript_messages
-                            )
-                        )
-                    )
-                return await self._consume_magentic_result(
-                    method(
-                        messages=self._normalize_transcript_messages(
-                            transcript_messages
-                        )
-                    )
-                )
-
-        raise RuntimeError(
-            "Unable to execute Magentic workflow with the installed builder."
-        )
-
     async def process_openai_messages(
         self,
         messages: List[Dict[str, Any]],
     ) -> AsyncGenerator[str, None]:
         """
-        Process OpenAI-style chat messages without reusing the interactive session.
-
-        Each request gets a fresh Agent Framework session so HTTP callers do not
-        share state with the CLI, Gradio, or each other.
-
-        Args:
-            messages: OpenAI-style chat messages representing the full request
-                history.
-
-        Yields:
-            Response text chunks from the planning agent, plus bracketed tool
-            call notices when the underlying stream reports them.
+        Process OpenAI-style chat messages using the configured strategy.
         """
-        transcript_messages = self._normalize_transcript_messages(messages)
-
-        if self.orchestration.mode == MagenticOrchestrationStrategy.mode:
-            if not self.manager_agent:
-                yield "Error: Orchestrator not initialized."
-                return
-
-            try:
-                response = await self._run_magentic_workflow(transcript_messages)
-                if response:
-                    yield response
-                else:
-                    LOG.warning(
-                        "No final assistant text received from Magentic workflow"
-                    )
-            except Exception as e:
-                error_msg = f"Error processing message: {e}"
-                LOG.error(error_msg)
-                traceback.print_exc()
-                yield error_msg
-            return
-
-        if not self.planning_agent:
-            yield "Error: Orchestrator not initialized."
-            return
-
-        prompt = self.build_prompt_from_transcript(transcript_messages)
-        request_session = self.planning_agent.create_session()
-
-        try:
-            async for chunk in self._stream_agent_as_tool_response(
-                prompt,
-                session=request_session,
-                include_tool_notices=True,
-            ):
-                yield chunk
-
-        except Exception as e:
-            error_msg = f"Error processing message: {e}"
-            LOG.error(error_msg)
-            traceback.print_exc()
-            yield error_msg
+        async for chunk in self.orchestration_strategy.process_openai_messages(
+            self, messages
+        ):
+            yield chunk
 
     async def process_message(
         self,
@@ -1308,114 +739,12 @@ Guidelines:
         isolated_session: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
-        Process a user message through the planning agent.
-
-        The planning agent routes to specialist agents as needed using the
-        as_tool() pattern. Each request runs on a copy of the active session so
-        overlapping UI requests do not mutate shared chat state mid-stream.
-
-        Args:
-            message: User input message.
-            isolated_session: If True, use a fresh agent session instead of a
-                copy of the shared orchestrator session. This is used for
-                overlapping background work so concurrent queries do not share
-                or mutate the same agent conversation state while another turn
-                is still running. This is more conservative than append-only
-                transcript merging because `AgentSession` can contain
-                provider-specific state beyond messages, and an overlapping turn
-                cannot see the unfinished turn's eventual result.
-
-        Yields:
-            Response text chunks from the planning agent, plus bracketed tool
-            call notices when the underlying stream reports them.
+        Process a user message using the configured strategy.
         """
-        if self.orchestration.mode == MagenticOrchestrationStrategy.mode:
-            if not self.manager_agent:
-                yield "Error: Orchestrator not initialized. Call initialize_orchestrator() first."
-                return
-
-            try:
-                if isolated_session:
-                    transcript_messages = self._normalize_transcript_messages(
-                        [{"role": "user", "content": message}]
-                    )
-                    aggregated_assistant_reply = await self._run_magentic_workflow(
-                        transcript_messages
-                    )
-                    self._persist_isolated_response(
-                        message,
-                        aggregated_assistant_reply,
-                    )
-                else:
-                    async with self._session_lock:
-                        history = self.session_manager.load_history()
-                        transcript_messages = self._normalize_transcript_messages(
-                            [*history, {"role": "user", "content": message}]
-                        )
-                        aggregated_assistant_reply = await self._run_magentic_workflow(
-                            transcript_messages
-                        )
-                        self._persist_completed_turn(
-                            {
-                                "message": message,
-                                "assistant_reply": aggregated_assistant_reply,
-                            }
-                        )
-                if aggregated_assistant_reply.strip():
-                    yield aggregated_assistant_reply
-                else:
-                    LOG.warning(
-                        "No final assistant text received from Magentic workflow"
-                    )
-            except Exception as e:
-                error_msg = f"Error processing message: {e}"
-                LOG.error(error_msg)
-                traceback.print_exc()
-                yield error_msg
-            return
-
-        if not self.planning_agent:
-            yield "Error: Orchestrator not initialized. Call initialize_orchestrator() first."
-            return
-
-        aggregated_assistant_reply = ""
-        tool_calls = []
-        response_started = False
-
-        try:
-            turn_id, run_session, history_lengths = await self._create_run_session(
-                isolated_session
-            )
-
-            # Stream responses from the planning agent with conversation context
-            stream = self.planning_agent.run(message, session=run_session, stream=True)
-            async for chunk in stream:
-                if chunk.text:
-                    response_started = True
-                    aggregated_assistant_reply += chunk.text
-                    yield chunk.text
-                    continue
-
-                for notice in self._tool_call_notices_from_chunk(chunk, tool_calls):
-                    yield notice
-
-            if not response_started:
-                LOG.warning("No text chunks received from planning agent")
-
-            if isolated_session:
-                self._persist_isolated_response(message, aggregated_assistant_reply)
-                return
-
-            await self._commit_completed_turn(
-                turn_id,
-                message,
-                aggregated_assistant_reply,
-                run_session,
-                history_lengths,
-            )
-
-        except Exception as e:
-            yield self._process_message_error(e)
+        async for chunk in self.orchestration_strategy.process_message(
+            self, message, isolated_session=isolated_session
+        ):
+            yield chunk
 
     @staticmethod
     def _process_message_error(error: Exception) -> str:
@@ -1519,44 +848,6 @@ Guidelines:
             ):
                 history_lengths[provider_name] = len(provider_state["messages"])
         return history_lengths
-
-    @staticmethod
-    def _tool_call_notices_from_chunk(chunk: Any, tool_calls: List[Any]) -> List[str]:
-        """
-        Return tool-call notices for first appearances of tool calls in a chunk.
-
-        Args:
-            chunk: Streaming response chunk from the planning agent.
-            tool_calls: Mutable list of already reported tool call IDs or names.
-
-        Returns:
-            Formatted tool-call notices for new tool calls in the chunk.
-        """
-        if not hasattr(chunk, "contents") or not chunk.contents:
-            return []
-
-        notices = []
-        for content in chunk.contents:
-            if not hasattr(content, "to_dict"):
-                continue
-
-            item = content.to_dict()
-            if item.get("type") not in ("function_call", "tool_call"):
-                continue
-
-            name = item.get("name")
-            if not name:
-                continue
-
-            call_id = item.get("call_id")
-            call_key = call_id or name
-            if call_key in tool_calls:
-                continue
-
-            tool_calls.append(call_key)
-            notices.append(f"\n[Calling: {name}]\n")
-
-        return notices
 
     def _persist_isolated_response(
         self,
@@ -1721,7 +1012,7 @@ Guidelines:
         Collect a streamed assistant response into a single string.
 
         Args:
-            message: User message to process through the planning agent.
+            message: User message to process through the configured strategy.
             isolated_session: If True, process the message with a fresh agent
                 session instead of the shared orchestrator session. This is used
                 for overlapping background work so concurrent queries do not
