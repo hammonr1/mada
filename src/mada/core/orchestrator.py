@@ -132,6 +132,11 @@ class MagenticOrchestrationStrategy(BaseOrchestrationStrategy):
             mcp_servers=mcp_servers,
         )
 
+        if not active_participant_configs:
+            raise RuntimeError(
+                "Magentic orchestration requires at least one active specialist agent."
+            )
+
         orchestrator.planning_agent = None
         orchestrator.session = None
         orchestrator.manager_agent = orchestrator._create_magentic_manager_agent(
@@ -1131,6 +1136,8 @@ Guidelines:
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():
                     return value
+            if event_type in {"", "output"} and "data" in payload:
+                return self._extract_magentic_text(payload["data"])
             return ""
 
         event_type = str(
@@ -1152,8 +1159,16 @@ Guidelines:
             if isinstance(value, str) and value.strip():
                 return value
 
+        if event_type in {"", "output"} and hasattr(payload, "data"):
+            data = getattr(payload, "data", None)
+            if data is not None:
+                return self._extract_magentic_text(data)
+
         if hasattr(payload, "to_dict"):
-            return self._extract_magentic_text(payload.to_dict())
+            try:
+                return self._extract_magentic_text(payload.to_dict())
+            except (TypeError, ValueError):
+                return ""
 
         return ""
 
@@ -1320,17 +1335,33 @@ Guidelines:
                 return
 
             try:
-                self.session_manager.add_message("user", message)
-                transcript_messages = self._normalize_transcript_messages(
-                    self.session_manager.load_history()
-                )
-                aggregated_assistant_reply = await self._run_magentic_workflow(
-                    transcript_messages
-                )
-                if aggregated_assistant_reply.strip():
-                    self.session_manager.add_message(
-                        "assistant", aggregated_assistant_reply
+                if isolated_session:
+                    transcript_messages = self._normalize_transcript_messages(
+                        [{"role": "user", "content": message}]
                     )
+                    aggregated_assistant_reply = await self._run_magentic_workflow(
+                        transcript_messages
+                    )
+                    self._persist_isolated_response(
+                        message,
+                        aggregated_assistant_reply,
+                    )
+                else:
+                    async with self._session_lock:
+                        history = self.session_manager.load_history()
+                        transcript_messages = self._normalize_transcript_messages(
+                            [*history, {"role": "user", "content": message}]
+                        )
+                        aggregated_assistant_reply = await self._run_magentic_workflow(
+                            transcript_messages
+                        )
+                        self._persist_completed_turn(
+                            {
+                                "message": message,
+                                "assistant_reply": aggregated_assistant_reply,
+                            }
+                        )
+                if aggregated_assistant_reply.strip():
                     yield aggregated_assistant_reply
                 else:
                     LOG.warning(
@@ -1370,16 +1401,6 @@ Guidelines:
 
             if not response_started:
                 LOG.warning("No text chunks received from planning agent")
-            async for chunk in self._stream_agent_as_tool_response(
-                message,
-                session=self.session,
-                include_tool_notices=True,
-            ):
-                if not (
-                    chunk.startswith("\n[Calling: ") and chunk.rstrip().endswith("]")
-                ):
-                    aggregated_assistant_reply += chunk
-                yield chunk
 
             if isolated_session:
                 self._persist_isolated_response(message, aggregated_assistant_reply)
