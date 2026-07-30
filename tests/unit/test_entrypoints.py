@@ -1246,7 +1246,7 @@ class TestMADACLICmd:
                 await cli.run()
 
                 orchestrator_mock.initialize_orchestrator.assert_awaited_once_with(
-                    config.agents, config.mcp_servers
+                    config.agents, config.mcp_servers, config.a2a_agents
                 )
                 orchestrator_mock.background_tasks.run_query.assert_not_called()
 
