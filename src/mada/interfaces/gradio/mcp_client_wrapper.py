@@ -143,7 +143,9 @@ class MCPGradioClientSession:
                 table_agent_dict = agent_dict
             self.initialized = True
             return gr.Button(status_msg, elem_id="green_btn"), create_agent_table(
-                table_agents, table_agent_dict
+                table_agents,
+                table_agent_dict,
+                self.a2a_agents,
             )
 
         except BaseExceptionGroup as eg:
@@ -154,7 +156,10 @@ class MCPGradioClientSession:
             error_msg = f"Failed to connect to MCP servers: {e}"
             LOG.error(error_msg)
             LOG.error("Full traceback:", exc_info=True)
-            return gr.Button(error_msg, variant="stop"), create_agent_table(self.agents)
+            return gr.Button(error_msg, variant="stop"), create_agent_table(
+                self.agents,
+                a2a_agents=self.a2a_agents,
+            )
 
     def list_sessions(self) -> List[str]:
         """

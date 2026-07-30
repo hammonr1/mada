@@ -104,6 +104,7 @@ def main() -> None:
         host=args.host,
         port=args.port,
         stateless_http=True,
+        uvicorn_config={"access_log": False},
     )
 
 

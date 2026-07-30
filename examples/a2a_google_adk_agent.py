@@ -112,10 +112,8 @@ class MCPExampleToolClient:
                 )
             except Exception as exc:
                 message = f"Average MCP tool call failed: {type(exc).__name__}: {exc}"
-                print(message, flush=True)
                 return message
         text = stringify_mcp_result(result)
-        print(f"Average MCP tool result: {text}", flush=True)
         return text
 
 
@@ -329,7 +327,7 @@ def main() -> None:
 
     public_url = args.public_url or f"http://localhost:{args.port}"
     app = create_app(GoogleADKA2AAgent(args.model, args.mcp_url), public_url)
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, access_log=False)
 
 
 if __name__ == "__main__":
