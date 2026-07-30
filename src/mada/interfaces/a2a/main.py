@@ -62,10 +62,16 @@ if TYPE_CHECKING:
 
 
 def _get_orchestration_config(config: AppConfig) -> OrchestrationConfig:
+    """
+    Return the configured orchestration settings or the default configuration.
+    """
     return getattr(config, "orchestration", None) or OrchestrationConfig()
 
 
 def _get_a2a_config(config: AppConfig) -> A2AConfig:
+    """
+    Return the configured self A2A settings or the default configuration.
+    """
     return getattr(config, "a2a", None) or A2AConfig()
 
 
@@ -74,6 +80,9 @@ class A2AStartupError(RuntimeError):
 
 
 def _format_startup_error_message(exc: BaseException) -> str:
+    """
+    Convert orchestrator startup failures into user-facing A2A error text.
+    """
     details = str(exc).strip() or exc.__class__.__name__
     lowered = details.lower()
 
@@ -88,6 +97,9 @@ def _format_startup_error_message(exc: BaseException) -> str:
 
 
 def _require_fastapi() -> None:
+    """
+    Raise a clear error when A2A server dependencies are unavailable.
+    """
     if FASTAPI_IMPORT_ERROR is not None or uvicorn is None:
         missing = []
         if FASTAPI_IMPORT_ERROR is not None:
@@ -101,6 +113,9 @@ def _require_fastapi() -> None:
 
 
 def _slugify(value: str) -> str:
+    """
+    Convert an agent name into a stable A2A skill identifier.
+    """
     slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip()).strip("-").lower()
     return slug or "mada-agent"
 
@@ -117,6 +132,9 @@ class MADAA2AService:
         api_key: Optional[str] = None,
         bearer_token: Optional[str] = None,
     ) -> None:
+        """
+        Initialize the service wrapper for one shared orchestrator instance.
+        """
         self.config = config
         self.a2a_config = _get_a2a_config(config)
         self.public_url = self.a2a_config.url or public_url
@@ -126,6 +144,9 @@ class MADAA2AService:
         self._startup_lock = asyncio.Lock()
 
     async def startup(self) -> None:
+        """
+        Start and initialize the orchestrator used to serve A2A requests.
+        """
         if self.orchestrator is not None:
             return
 
@@ -154,6 +175,9 @@ class MADAA2AService:
             raise A2AStartupError(_format_startup_error_message(exc)) from exc
 
     async def ensure_started(self) -> None:
+        """
+        Lazily start the orchestrator once across concurrent requests.
+        """
         if self.orchestrator is not None:
             return
 
@@ -162,6 +186,9 @@ class MADAA2AService:
                 await self.startup()
 
     async def shutdown(self) -> None:
+        """
+        Shut down the shared orchestrator if it has been initialized.
+        """
         if self.orchestrator is None:
             return
         await self.orchestrator.__aexit__(None, None, None)
@@ -170,6 +197,9 @@ class MADAA2AService:
     def validate_api_key(
         self, authorization: Optional[str], x_api_key: Optional[str]
     ) -> None:
+        """
+        Validate the configured API key against request headers.
+        """
         if not self.api_key:
             return
 
@@ -181,6 +211,9 @@ class MADAA2AService:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
     def build_agent_card(self) -> Dict[str, Any]:
+        """
+        Build the public A2A agent card for this MADA service.
+        """
         if self.a2a_config.card_path:
             card = self._load_agent_card_file()
             card["url"] = self.public_url
@@ -205,6 +238,9 @@ class MADAA2AService:
         }
 
     def _load_agent_card_file(self) -> Dict[str, Any]:
+        """
+        Load and validate a standalone A2A agent card JSON file.
+        """
         card_path = Path(self.a2a_config.card_path)
         try:
             with card_path.open("r", encoding="utf-8") as card_file:
@@ -221,6 +257,9 @@ class MADAA2AService:
         return card
 
     def _build_skills(self) -> list[dict[str, Any]]:
+        """
+        Build A2A skill entries from configuration or configured MADA agents.
+        """
         if self.a2a_config.skills:
             return self.a2a_config.skills
 
@@ -252,6 +291,9 @@ class MADAA2AService:
         ]
 
     async def collect_response(self, message: str) -> str:
+        """
+        Collect a complete orchestrator response for a single A2A message.
+        """
         if self.orchestrator is None:
             raise RuntimeError("Orchestrator not initialized")
         return await self.orchestrator.collect_message_response(
@@ -260,6 +302,9 @@ class MADAA2AService:
         )
 
     async def stream_response(self, message: str) -> AsyncGenerator[str, None]:
+        """
+        Stream orchestrator response chunks for a single A2A message.
+        """
         if self.orchestrator is None:
             raise RuntimeError("Orchestrator not initialized")
 
@@ -276,6 +321,9 @@ def _json_rpc_error(
     message: str,
     status_code: int = 200,
 ) -> JSONResponse:
+    """
+    Build a JSON-RPC error response with the requested HTTP status.
+    """
     return JSONResponse(
         {
             "jsonrpc": "2.0",
@@ -287,6 +335,9 @@ def _json_rpc_error(
 
 
 def _extract_message_text(params: Dict[str, Any]) -> str:
+    """
+    Extract text content from supported A2A message parameter shapes.
+    """
     message = params.get("message", params)
     if isinstance(message, str):
         return message
@@ -316,6 +367,9 @@ def _build_task(
     text: str,
     state: str = "completed",
 ) -> Dict[str, Any]:
+    """
+    Build an A2A task object containing a text response artifact.
+    """
     message_id = f"msg-{uuid.uuid4().hex}"
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     response_message = {
@@ -346,6 +400,9 @@ def _build_task(
 
 
 def _ids_from_params(params: Dict[str, Any]) -> tuple[str, str]:
+    """
+    Resolve task and context IDs from request params or create new IDs.
+    """
     message = params.get("message")
     task_id = params.get("id") or params.get("taskId")
     context_id = params.get("contextId")
@@ -378,6 +435,9 @@ def create_a2a_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        """
+        Attach the A2A service to app state and clean it up on shutdown.
+        """
         app.state.mada_a2a_service = service
         try:
             yield
@@ -388,6 +448,9 @@ def create_a2a_app(
 
     @app.get("/health")
     async def health() -> Dict[str, str]:
+        """
+        Report whether the A2A process is running and initialized.
+        """
         return {
             "status": "ok",
             "orchestrator_initialized": "true"
@@ -396,6 +459,9 @@ def create_a2a_app(
         }
 
     async def get_agent_card() -> Dict[str, Any]:
+        """
+        Return the MADA A2A agent card for discovery endpoints.
+        """
         return service.build_agent_card()
 
     app.get("/.well-known/agent-card.json")(get_agent_card)
@@ -407,6 +473,9 @@ def create_a2a_app(
         authorization: Optional[str] = Header(default=None),
         x_api_key: Optional[str] = Header(default=None),
     ):
+        """
+        Handle A2A JSON-RPC message requests.
+        """
         service.validate_api_key(authorization, x_api_key)
 
         request_id = body.get("id")
@@ -451,6 +520,9 @@ def create_a2a_app(
             }
 
         async def event_stream() -> AsyncGenerator[str, None]:
+            """
+            Yield server-sent events for streaming A2A responses.
+            """
             collected = []
             async for chunk in service.stream_response(message_text):
                 collected.append(chunk)

@@ -41,6 +41,9 @@ class A2AConfig:
     skills: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        """
+        Normalize fields and validate generated-card skill entries.
+        """
         self.name = expand_env_vars(self.name or "").strip() or "MADA"
         self.description = (
             expand_env_vars(self.description or "").strip()
@@ -103,6 +106,9 @@ class RemoteA2AAgentConfig:
     headers: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        """
+        Normalize fields and validate required remote-agent settings.
+        """
         self.url = expand_env_vars(self.url or "").strip()
         if not self.url:
             raise ValueError("'a2a_agents.<name>.url' must not be empty")

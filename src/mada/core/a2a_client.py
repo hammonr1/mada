@@ -26,6 +26,9 @@ class RemoteA2AClient:
     """
 
     def __init__(self, name: str, config: RemoteA2AAgentConfig) -> None:
+        """
+        Initialize an HTTP client for a configured remote A2A agent.
+        """
         self.name = name
         self.config = config
         headers = dict(config.headers)
@@ -34,6 +37,9 @@ class RemoteA2AClient:
         self._client = httpx.AsyncClient(headers=headers, timeout=config.timeout)
 
     async def send_message(self, task: str) -> str:
+        """
+        Send a text task to the remote A2A agent and return its text response.
+        """
         request_id = f"mada-{uuid.uuid4().hex}"
         payload = {
             "jsonrpc": "2.0",
@@ -94,9 +100,15 @@ class RemoteA2AClient:
         return {}
 
     async def aclose(self) -> None:
+        """
+        Close the underlying async HTTP client.
+        """
         await self._client.aclose()
 
     def _extract_text(self, result: Any) -> str:
+        """
+        Extract human-readable text from an A2A JSON-RPC result payload.
+        """
         if result is None:
             return ""
         if isinstance(result, str):
@@ -111,6 +123,9 @@ class RemoteA2AClient:
         return str(result)
 
     def _collect_text_parts(self, value: Any, texts: list[str]) -> None:
+        """
+        Recursively collect text parts from an A2A result structure.
+        """
         if isinstance(value, dict):
             parts = value.get("parts")
             if isinstance(parts, list):
