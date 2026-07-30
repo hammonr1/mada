@@ -1,33 +1,7 @@
 # Copyright 2026, Lawrence Livermore National Security, LLC and MADA contributors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-"""
-Simple Google ADK-backed A2A agent for MADA.
-
-Run:
-    python examples/a2a_average_mcp_server.py --port 9102
-    python examples/a2a_google_adk_agent.py --port 9002
-    python examples/a2a_google_adk_agent.py --port 9002 --model gemini-2.5-pro
-
-Install optional dependencies first:
-    pip install google-adk fastapi uvicorn fastmcp
-
-By default this example reads:
-    MADA_MODEL or GOOGLE_MODEL
-
-MADA config:
-    {
-      "a2a_agents": {
-        "GoogleADKAgent": {
-          "url": "http://localhost:9002/",
-          "description": "Simple Google ADK remote agent"
-        }
-      }
-    }
-
-Smoke test prompt from MADA:
-    What are the average values for the sample table columns?
-"""
+"""Simple Google ADK-backed A2A agent for MADA."""
 
 from __future__ import annotations
 
@@ -39,82 +13,21 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from a2a_example_config import DEFAULT_CONFIG_PATH, load_model_settings
 from fastapi import FastAPI, HTTPException
-
-try:
-    from google.adk.agents import Agent
-    from google.adk.runners import Runner
-    from google.adk.sessions import InMemorySessionService
-    from google.genai import types
-except ImportError:  # pragma: no cover - example dependency guard
-    Agent = None
-    Runner = None
-    InMemorySessionService = None
-    types = None
+from google.adk.agents import Agent
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
+from google.genai import types
 
 
-DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_MCP_URL = "http://localhost:9102/mcp"
-DEFAULT_AVERAGE_COLUMNS = "all"
 DEFAULT_AGENT_CARD_PATH = (
     Path(__file__).parent / "agent_cards" / "google_adk_agent_card.json"
 )
 APP_NAME = "mada_google_adk_a2a_agent"
-
-
-def should_run_average_tool(task: str) -> bool:
-    lowered = task.lower()
-    return (
-        "average" in lowered
-        or "mean" in lowered
-        or "columns" in lowered
-        or "column" in lowered
-        or "numeric" in lowered
-    )
-
-
-def stringify_mcp_result(result: Any) -> str:
-    if result is None:
-        return ""
-    content = getattr(result, "content", None)
-    if content is not None:
-        return stringify_mcp_result(content)
-    if isinstance(result, list):
-        parts = []
-        for item in result:
-            text = getattr(item, "text", None)
-            parts.append(str(text if text is not None else item))
-        return "\n".join(parts)
-    return str(result)
-
-
-class MCPExampleToolClient:
-    def __init__(self, url: str) -> None:
-        self.url = url
-
-    async def calculate_column_averages(
-        self, columns: str = DEFAULT_AVERAGE_COLUMNS
-    ) -> str:
-        try:
-            from fastmcp import Client
-        except ImportError as exc:  # pragma: no cover - example dependency guard
-            raise RuntimeError(
-                "This example requires fastmcp for MCP tool calls. Install it with "
-                "`pip install fastmcp`."
-            ) from exc
-
-        async with Client(self.url) as client:
-            try:
-                result = await client.call_tool(
-                    "calculate_column_averages",
-                    arguments={"columns": columns},
-                    timeout=30,
-                )
-            except Exception as exc:
-                message = f"Average MCP tool call failed: {type(exc).__name__}: {exc}"
-                return message
-        text = stringify_mcp_result(result)
-        return text
 
 
 def extract_message_text(params: dict[str, Any]) -> str:
@@ -178,31 +91,41 @@ def ids_from_params(params: dict[str, Any]) -> tuple[str, str]:
 
 
 class GoogleADKA2AAgent:
-    def __init__(self, model: str, mcp_url: str = DEFAULT_MCP_URL) -> None:
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        mcp_url: str = DEFAULT_MCP_URL,
+    ) -> None:
+        self.provider = provider
         self.model = model
-        self.mcp_tools = MCPExampleToolClient(mcp_url)
+        self.api_key = api_key
+        self.base_url = base_url
+        self.mcp_url = mcp_url
         self._session_service = None
         self._runner = None
 
-    def _require_adk(self) -> None:
-        if Agent is None or Runner is None or InMemorySessionService is None:
-            raise RuntimeError(
-                "This example requires Google ADK. Install it with "
-                "`pip install google-adk`."
-            )
-
     @property
     def runner(self):
-        self._require_adk()
         if self._runner is None:
             agent = Agent(
                 name="GoogleADKAgent",
-                model=self.model,
+                model=self._build_adk_model(),
                 description="Simple Google ADK remote agent callable from MADA.",
                 instruction=(
                     "You are a concise remote specialist called by MADA. "
-                    "Complete the delegated task and return only the useful result."
+                    "Complete the delegated task and return only the useful result. "
+                    "Use your available MCP tools when they are relevant."
                 ),
+                tools=[
+                    McpToolset(
+                        connection_params=StreamableHTTPConnectionParams(
+                            url=self.mcp_url,
+                        )
+                    )
+                ],
             )
             self._session_service = InMemorySessionService()
             self._runner = Runner(
@@ -212,11 +135,22 @@ class GoogleADKA2AAgent:
             )
         return self._runner
 
-    async def run(self, task: str) -> str:
-        if should_run_average_tool(task):
-            return await self.mcp_tools.calculate_column_averages()
+    def _build_adk_model(self):
+        provider = self.provider.lower()
+        if provider in {"openai", "livai"}:
+            if self.api_key:
+                os.environ["OPENAI_API_KEY"] = self.api_key
+            if self.base_url:
+                os.environ["OPENAI_API_BASE"] = self.base_url
+                os.environ["OPENAI_BASE_URL"] = self.base_url
+            return LiteLlm(model=f"openai/{self.model}")
 
-        self._require_adk()
+        return self.model
+
+    async def run(self, task: str) -> str:
+        return await self._run_adk_agent(task)
+
+    async def _run_adk_agent(self, prompt: str) -> str:
         runner = self.runner
         user_id = f"mada-user-{uuid.uuid4().hex}"
         session_id = f"mada-session-{uuid.uuid4().hex}"
@@ -228,7 +162,7 @@ class GoogleADKA2AAgent:
 
         message = types.Content(
             role="user",
-            parts=[types.Part(text=task)],
+            parts=[types.Part(text=prompt)],
         )
 
         final_text = ""
@@ -309,11 +243,29 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind")
     parser.add_argument("--port", type=int, default=9002, help="Port to bind")
     parser.add_argument(
+        "--config",
+        default=os.getenv("MADA_CONFIG") or str(DEFAULT_CONFIG_PATH),
+        help="MADA config JSON to read default model settings from.",
+    )
+    parser.add_argument(
+        "--provider",
+        default=None,
+        help="Provider override. Defaults to the MADA config provider.",
+    )
+    parser.add_argument(
         "--model",
-        default=os.getenv("MADA_MODEL") or os.getenv("GOOGLE_MODEL") or DEFAULT_MODEL,
-        help=(
-            "Model to use. Defaults to MADA_MODEL, GOOGLE_MODEL, then gemini-2.5-flash."
-        ),
+        default=None,
+        help="Model override. Defaults to the MADA config model.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key override. Defaults to the MADA config api_key.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Base URL override for OpenAI-compatible ADK models.",
     )
     parser.add_argument(
         "--mcp-url",
@@ -325,8 +277,27 @@ def main() -> None:
 
     import uvicorn
 
+    model_settings = load_model_settings(args.config)
+    provider = args.provider or model_settings.get("provider")
+    model = args.model or model_settings.get("model")
+    api_key = args.api_key or model_settings.get("api_key")
+    base_url = args.base_url or model_settings.get("base_url")
+    if not provider or not model:
+        raise RuntimeError(
+            "Google ADK A2A example requires provider and model from the MADA "
+            "config or explicit --provider/--model overrides."
+        )
+    if provider.lower() in {"openai", "livai"} and (not api_key or not base_url):
+        raise RuntimeError(
+            "OpenAI-compatible ADK model providers require api_key and base_url "
+            "from the MADA config or explicit --api-key/--base-url overrides."
+        )
+
     public_url = args.public_url or f"http://localhost:{args.port}"
-    app = create_app(GoogleADKA2AAgent(args.model, args.mcp_url), public_url)
+    app = create_app(
+        GoogleADKA2AAgent(provider, model, api_key, base_url, args.mcp_url),
+        public_url,
+    )
     uvicorn.run(app, host=args.host, port=args.port, access_log=False)
 
 

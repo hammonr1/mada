@@ -3,12 +3,6 @@
 
 """
 CSV column-average MCP server used by the Google ADK A2A example agent.
-
-Run:
-    python examples/a2a_average_mcp_server.py --port 9102
-
-Install optional dependencies first:
-    pip install fastmcp
 """
 
 from __future__ import annotations
@@ -36,8 +30,15 @@ def create_server() -> FastMCP:
         """
         Calculate averages for numeric columns in a built-in CSV table.
         """
-        rows = _read_sample_rows()
-        numeric_columns = _numeric_columns(rows)
+        rows = list(csv.DictReader(StringIO(SAMPLE_CSV)))
+        numeric_columns = []
+        for column in rows[0]:
+            try:
+                for row in rows:
+                    float(row[column])
+            except ValueError:
+                continue
+            numeric_columns.append(column)
 
         if columns.strip().lower() != "all":
             requested = [
@@ -60,24 +61,6 @@ def create_server() -> FastMCP:
         return "\n".join(lines)
 
     return mcp
-
-
-def _read_sample_rows() -> list[dict[str, str]]:
-    return list(csv.DictReader(StringIO(SAMPLE_CSV)))
-
-
-def _numeric_columns(rows: list[dict[str, str]]) -> list[str]:
-    if not rows:
-        return []
-    columns = []
-    for column in rows[0]:
-        try:
-            for row in rows:
-                float(row[column])
-        except ValueError:
-            continue
-        columns.append(column)
-    return columns
 
 
 def main() -> None:

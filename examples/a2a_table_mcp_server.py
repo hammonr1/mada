@@ -3,12 +3,6 @@
 
 """
 CSV table-reader MCP server used by the LangChain A2A example agent.
-
-Run:
-    python examples/a2a_table_mcp_server.py --port 9101
-
-Install optional dependencies first:
-    pip install fastmcp
 """
 
 from __future__ import annotations
@@ -36,7 +30,7 @@ def create_server() -> FastMCP:
         """
         Read a small built-in CSV table and return it as text.
         """
-        rows = _read_sample_rows()
+        rows = list(csv.DictReader(StringIO(SAMPLE_CSV)))
         limit = max(1, min(row_limit, len(rows)))
         selected_rows = rows[:limit]
         headers = list(rows[0].keys())
@@ -54,10 +48,6 @@ def create_server() -> FastMCP:
         return "\n".join(lines)
 
     return mcp
-
-
-def _read_sample_rows() -> list[dict[str, str]]:
-    return list(csv.DictReader(StringIO(SAMPLE_CSV)))
 
 
 def main() -> None:

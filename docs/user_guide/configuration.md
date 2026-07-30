@@ -273,6 +273,22 @@ using the remote agent card for routing context when available.
 }
 ```
 
+The example A2A agents read the same MADA config by default so they use the
+same `model` block as the orchestrator. Install their optional dependencies and
+launch them with the config path:
+
+```bash
+pip install -e ".[a2a-examples]"
+python examples/a2a_table_mcp_server.py --port 9101
+python examples/a2a_average_mcp_server.py --port 9102
+python examples/a2a_langchain_agent.py --port 9111 --config configs/example_a2a_agents.json --mcp-url http://localhost:9101/mcp
+python examples/a2a_google_adk_agent.py --port 9112 --config configs/example_a2a_agents.json --mcp-url http://localhost:9102/mcp
+```
+
+Use each example agent's `--model`, `--api-key`, and `--base-url` flags when
+you want that remote agent to use a different model endpoint from MADA. The
+Google ADK example also accepts `--provider`.
+
 ### MADA's A2A Agent Card
 
 Use `a2a_self` when you want MADA itself to be discoverable by other A2A agents.

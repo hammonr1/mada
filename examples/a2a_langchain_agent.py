@@ -1,36 +1,7 @@
 # Copyright 2026, Lawrence Livermore National Security, LLC and MADA contributors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-"""
-Simple LangChain-backed A2A agent for MADA.
-
-Run:
-    python examples/a2a_table_mcp_server.py --port 9101
-    python examples/a2a_langchain_agent.py --port 9001
-    python examples/a2a_langchain_agent.py --port 9001 --model gpt-5
-
-Install optional dependencies first:
-    pip install langchain-openai fastapi uvicorn fastmcp
-
-By default this example reads the same common environment variables used by
-MADA example configs:
-    MADA_MODEL or OPENAI_MODEL
-    API_KEY or OPENAI_API_KEY
-    API_BASE_URL or OPENAI_BASE_URL
-
-MADA config:
-    {
-      "a2a_agents": {
-        "LangChainAgent": {
-          "url": "http://localhost:9001/",
-          "description": "Simple LangChain model-backed remote agent"
-        }
-      }
-    }
-
-Smoke test prompt from MADA:
-    Read the sample CSV table.
-"""
+"""Simple LangChain-backed A2A agent for MADA."""
 
 from __future__ import annotations
 
@@ -42,70 +13,17 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from a2a_example_config import DEFAULT_CONFIG_PATH, load_model_settings
 from fastapi import FastAPI, HTTPException
-
-try:
-    from langchain_openai import ChatOpenAI
-except ImportError:  # pragma: no cover - example dependency guard
-    ChatOpenAI = None
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_core.messages import ToolMessage
+from langchain_openai import ChatOpenAI
 
 
-DEFAULT_MODEL = "gpt-5"
-DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MCP_URL = "http://localhost:9101/mcp"
-DEFAULT_ROW_LIMIT = 4
 DEFAULT_AGENT_CARD_PATH = (
     Path(__file__).parent / "agent_cards" / "langchain_agent_card.json"
 )
-
-
-def should_run_table_tool(task: str) -> bool:
-    lowered = task.lower()
-    return (
-        "table" in lowered or "csv" in lowered or "read" in lowered or "rows" in lowered
-    )
-
-
-def stringify_mcp_result(result: Any) -> str:
-    if result is None:
-        return ""
-    content = getattr(result, "content", None)
-    if content is not None:
-        return stringify_mcp_result(content)
-    if isinstance(result, list):
-        parts = []
-        for item in result:
-            text = getattr(item, "text", None)
-            parts.append(str(text if text is not None else item))
-        return "\n".join(parts)
-    return str(result)
-
-
-class MCPExampleToolClient:
-    def __init__(self, url: str) -> None:
-        self.url = url
-
-    async def read_sample_table(self, row_limit: int = DEFAULT_ROW_LIMIT) -> str:
-        try:
-            from fastmcp import Client
-        except ImportError as exc:  # pragma: no cover - example dependency guard
-            raise RuntimeError(
-                "This example requires fastmcp for MCP tool calls. Install it with "
-                "`pip install fastmcp`."
-            ) from exc
-
-        async with Client(self.url) as client:
-            try:
-                result = await client.call_tool(
-                    "read_sample_table",
-                    arguments={"row_limit": row_limit},
-                    timeout=30,
-                )
-            except Exception as exc:
-                message = f"Table MCP tool call failed: {type(exc).__name__}: {exc}"
-                return message
-        text = stringify_mcp_result(result)
-        return text
 
 
 def extract_message_text(params: dict[str, Any]) -> str:
@@ -179,16 +97,12 @@ class LangChainA2AAgent:
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
-        self.mcp_tools = MCPExampleToolClient(mcp_url)
+        self.mcp_url = mcp_url
         self._llm = None
+        self._tools = None
 
     @property
     def llm(self):
-        if ChatOpenAI is None:
-            raise RuntimeError(
-                "This example requires langchain-openai. Install it with "
-                "`pip install langchain-openai`."
-            )
         if self._llm is None:
             kwargs = {"model": self.model}
             if self.api_key:
@@ -199,20 +113,54 @@ class LangChainA2AAgent:
         return self._llm
 
     async def run(self, task: str) -> str:
-        if should_run_table_tool(task):
-            return await self.mcp_tools.read_sample_table()
+        return await self._run_langchain_agent(task)
 
-        response = await self.llm.ainvoke(
-            [
-                (
-                    "system",
-                    "You are a concise remote specialist called by MADA. "
-                    "Complete the delegated task and return only the useful result.",
-                ),
-                ("human", task),
-            ]
-        )
+    async def _run_langchain_agent(self, prompt: str) -> str:
+        tools = await self._get_tools()
+        tools_by_name = {tool.name: tool for tool in tools}
+        messages = [
+            (
+                "system",
+                "You are a concise remote specialist called by MADA. "
+                "Complete the delegated task and return only the useful result. "
+                "Use your available MCP tools when they are relevant.",
+            ),
+            ("human", prompt),
+        ]
+
+        response = await self.llm.bind_tools(tools).ainvoke(messages)
+        tool_calls = getattr(response, "tool_calls", []) or []
+        if not tool_calls:
+            return str(getattr(response, "content", response))
+
+        messages.append(response)
+        for tool_call in tool_calls:
+            tool = tools_by_name.get(tool_call.get("name"))
+            if tool is None:
+                continue
+            result = await tool.ainvoke(tool_call.get("args") or {})
+            messages.append(
+                ToolMessage(
+                    content=str(result),
+                    tool_call_id=tool_call.get("id") or f"tool-{uuid.uuid4().hex}",
+                )
+            )
+
+        response = await self.llm.ainvoke(messages)
         return str(getattr(response, "content", response))
+
+    async def _get_tools(self) -> list[Any]:
+        if self._tools is None:
+            client = MultiServerMCPClient(
+                {
+                    "example": {
+                        "transport": "streamable_http",
+                        "url": self.mcp_url,
+                    }
+                }
+            )
+            self._tools = await client.get_tools()
+        return self._tools
 
 
 def create_app(agent: LangChainA2AAgent, public_url: str) -> FastAPI:
@@ -275,23 +223,24 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind")
     parser.add_argument("--port", type=int, default=9001, help="Port to bind")
     parser.add_argument(
+        "--config",
+        default=os.getenv("MADA_CONFIG") or str(DEFAULT_CONFIG_PATH),
+        help="MADA config JSON to read default model settings from.",
+    )
+    parser.add_argument(
         "--model",
-        default=os.getenv("MADA_MODEL") or os.getenv("OPENAI_MODEL") or DEFAULT_MODEL,
-        help="Model to use. Defaults to MADA_MODEL, OPENAI_MODEL, then gpt-5.",
+        default=None,
+        help="Model override. Defaults to the MADA config model.",
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY"),
-        help="API key. Defaults to API_KEY or OPENAI_API_KEY.",
+        default=None,
+        help="API key override. Defaults to the MADA config api_key.",
     )
     parser.add_argument(
         "--base-url",
-        default=(
-            os.getenv("API_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL")
-            or DEFAULT_BASE_URL
-        ),
-        help="OpenAI-compatible base URL.",
+        default=None,
+        help="OpenAI-compatible base URL override. Defaults to the MADA config base_url.",
     )
     parser.add_argument(
         "--mcp-url",
@@ -303,9 +252,19 @@ def main() -> None:
 
     import uvicorn
 
+    model_settings = load_model_settings(args.config)
+    model = args.model or model_settings.get("model")
+    api_key = args.api_key or model_settings.get("api_key")
+    base_url = args.base_url or model_settings.get("base_url")
+    if not model or not api_key or not base_url:
+        raise RuntimeError(
+            "LangChain A2A example requires model, api_key, and base_url from "
+            "the MADA config or explicit --model/--api-key/--base-url overrides."
+        )
+
     public_url = args.public_url or f"http://localhost:{args.port}"
     app = create_app(
-        LangChainA2AAgent(args.model, args.api_key, args.base_url, args.mcp_url),
+        LangChainA2AAgent(model, api_key, base_url, args.mcp_url),
         public_url,
     )
     uvicorn.run(app, host=args.host, port=args.port, access_log=False)

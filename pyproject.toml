@@ -71,8 +71,18 @@ docs = [
     "mike",
 ]
 
+# Example A2A agent requirements
+a2a-examples = [
+    "fastmcp",
+    "google-adk",
+    "langchain-core",
+    "langchain-mcp-adapters",
+    "langchain-openai",
+    "litellm",
+]
+
 # All requirements
-all = ["mada[tests, docs]"]
+all = ["mada[tests, docs, a2a-examples]"]
 
 [project.scripts]
 mada = "mada.main:main"
