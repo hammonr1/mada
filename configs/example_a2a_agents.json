@@ -31,6 +31,11 @@
       "card_url": "http://localhost:9112/.well-known/agent-card.json"
     }
   },
+  "a2a_self": {
+    "card_path": "agent_cards/mada_orchestrator_card.json",
+    "url": "http://localhost:9120",
+    "version": "0.2.0"
+  },
   "orchestration": {
     "mode": "agent-as-tool",
     "participants": ["LocalCoordinatorAgent", "LocalCritiqueAgent"]

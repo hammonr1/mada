@@ -19,6 +19,7 @@ import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional
 
 import click
@@ -175,6 +176,16 @@ class MADAA2AService:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
     def build_agent_card(self) -> Dict[str, Any]:
+        if self.a2a_config.card_path:
+            card = self._load_agent_card_file()
+            card["url"] = self.public_url
+            card.setdefault("protocolVersion", "0.3.0")
+            card.setdefault("capabilities", {"streaming": True})
+            card.setdefault("defaultInputModes", ["text/plain"])
+            card.setdefault("defaultOutputModes", ["text/plain"])
+            card["supportsAuthenticatedExtendedCard"] = bool(self.api_key)
+            return card
+
         return {
             "protocolVersion": "0.3.0",
             "name": self.a2a_config.name,
@@ -187,6 +198,22 @@ class MADAA2AService:
             "skills": self._build_skills(),
             "supportsAuthenticatedExtendedCard": bool(self.api_key),
         }
+
+    def _load_agent_card_file(self) -> Dict[str, Any]:
+        card_path = Path(self.a2a_config.card_path)
+        try:
+            with card_path.open("r", encoding="utf-8") as card_file:
+                card = json.load(card_file)
+        except OSError as exc:
+            raise RuntimeError(f"Could not read A2A agent card: {card_path}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"A2A agent card is not valid JSON: {card_path}"
+            ) from exc
+
+        if not isinstance(card, dict):
+            raise RuntimeError(f"A2A agent card must be a JSON object: {card_path}")
+        return card
 
     def _build_skills(self) -> list[dict[str, Any]]:
         if self.a2a_config.skills:

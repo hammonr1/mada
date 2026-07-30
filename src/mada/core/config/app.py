@@ -15,6 +15,7 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List
 
 from mada.core.config.agents import AgentConfig
@@ -109,7 +110,7 @@ class AppConfig:
         )
         app_conf["orchestration"] = orchestration_cfg
 
-        app_conf["a2a"] = load_a2a_config(config_dict.get("a2a"))
+        app_conf["a2a"] = load_a2a_config(config_dict.get("a2a_self"))
         app_conf["a2a_agents"] = load_a2a_agents_config(config_dict.get("a2a_agents"))
 
         # Load MCP servers configuration (optional)
@@ -142,7 +143,18 @@ def load_config_from_json(path: str) -> AppConfig:
     Returns:
         AppConfig: The parsed application configuration object.
     """
-    with open(path, "r") as f:
+    config_path = Path(path)
+    with open(config_path, "r") as f:
         config_dict = json.load(f)
+
+    a2a_config = config_dict.get("a2a_self")
+    if isinstance(a2a_config, dict):
+        card_path = a2a_config.get("card_path")
+        if card_path:
+            resolved_card_path = Path(str(card_path).strip())
+            if not resolved_card_path.is_absolute():
+                a2a_config["card_path"] = str(
+                    (config_path.parent / resolved_card_path).resolve()
+                )
 
     return AppConfig.from_dict(config_dict)

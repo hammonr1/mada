@@ -9,6 +9,7 @@ Tests for the following entry point modules:
 - mada/interface/gradio/main.py -> The `mada-gradio` command.
 """
 
+import json
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
@@ -1004,6 +1005,46 @@ class TestMADAA2ACmd:
             assert payload["description"] == "Test A2A agent"
             assert payload["url"] == "https://mada.example/a2a"
             assert payload["capabilities"]["streaming"] is True
+
+        def test_agent_card_endpoint_can_serve_card_file(
+            self, create_dummy_config: Callable, tmp_path: Path
+        ):
+            """
+            Test that the standard agent card endpoint can load a standalone card.
+            """
+            card_path = tmp_path / "agent-card.json"
+            card_path.write_text(
+                json.dumps(
+                    {
+                        "protocolVersion": "0.3.0",
+                        "name": "FileBackedMADA",
+                        "description": "Loaded from a card file",
+                        "url": "http://placeholder",
+                        "version": "1.0.0",
+                        "skills": [
+                            {
+                                "id": "file-backed",
+                                "name": "File backed card",
+                                "description": "Served from JSON",
+                                "tags": ["a2a"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = create_dummy_config()
+            config.a2a = A2AConfig(card_path=str(card_path))
+
+            service = MADAA2AService(
+                config=config, public_url="https://mada.example/a2a"
+            )
+            payload = service.build_agent_card()
+
+            assert payload["name"] == "FileBackedMADA"
+            assert payload["description"] == "Loaded from a card file"
+            assert payload["url"] == "https://mada.example/a2a"
+            assert payload["supportsAuthenticatedExtendedCard"] is False
 
         def test_message_send_returns_a2a_task(self, create_dummy_config: Callable):
             """

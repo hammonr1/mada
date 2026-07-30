@@ -118,6 +118,7 @@ class TestA2AConfig:
                 "description": "Agent card description",
                 "version": "1.2.3",
                 "url": "https://mada.example/a2a",
+                "card_path": "/tmp/mada-card.json",
                 "skills": [{"id": "workflow", "name": "Workflow"}],
             }
         )
@@ -127,12 +128,13 @@ class TestA2AConfig:
             description="Agent card description",
             version="1.2.3",
             url="https://mada.example/a2a",
+            card_path="/tmp/mada-card.json",
             skills=[{"id": "workflow", "name": "Workflow"}],
         )
 
     @pytest.mark.parametrize("invalid_value", [False, []])
     def test_load_a2a_config_rejects_non_object_blocks(self, invalid_value):
-        with pytest.raises(ValueError, match="'a2a' must be an object"):
+        with pytest.raises(ValueError, match="'a2a_self' must be an object"):
             load_a2a_config(invalid_value)
 
 

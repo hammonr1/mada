@@ -22,6 +22,9 @@ class A2AConfig:
         version: Public agent version advertised in the A2A agent card.
         url: Externally reachable A2A endpoint URL. When omitted, the runtime
             host and port are used to build a local URL for the agent card.
+        card_path: Optional path to a standalone A2A agent card JSON file.
+            When provided, the A2A interface serves this card and overrides its
+            `url` field with the runtime public URL.
         skills: Optional skill entries to expose in the A2A agent card. When
             omitted, skills are derived from configured MADA agents.
     """
@@ -30,6 +33,7 @@ class A2AConfig:
     description: str = "MADA multi-agent orchestration service"
     version: str = "0.2.0"
     url: str = ""
+    card_path: str = ""
     skills: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -40,19 +44,20 @@ class A2AConfig:
         )
         self.version = expand_env_vars(self.version or "").strip() or "0.2.0"
         self.url = expand_env_vars(self.url or "").strip()
+        self.card_path = expand_env_vars(self.card_path or "").strip()
 
         if self.skills is None:
             self.skills = []
         if not isinstance(self.skills, list):
-            raise ValueError("'a2a.skills' must be a list")
+            raise ValueError("'a2a_self.skills' must be a list")
         for skill in self.skills:
             if not isinstance(skill, dict):
-                raise ValueError("'a2a.skills' must contain only objects")
+                raise ValueError("'a2a_self.skills' must contain only objects")
 
 
 def load_a2a_config(config_dict: dict[str, Any] | None) -> A2AConfig:
     """
-    Load A2A configuration from a dictionary.
+    Load self A2A configuration from a dictionary.
 
     Args:
         config_dict: Serialized A2A settings, or `None`.
@@ -64,7 +69,7 @@ def load_a2a_config(config_dict: dict[str, Any] | None) -> A2AConfig:
         return A2AConfig()
 
     if not isinstance(config_dict, dict):
-        raise ValueError("'a2a' must be an object")
+        raise ValueError("'a2a_self' must be an object")
 
     return A2AConfig(**config_dict)
 
