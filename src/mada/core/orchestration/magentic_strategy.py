@@ -35,6 +35,17 @@ except ImportError:  # pragma: no cover - depends on installed agent framework v
 LOG = logging.getLogger(__name__)
 
 
+class _InternalToolCallSignal(str):
+    """
+    Empty stream chunk that carries background-detach metadata.
+    """
+
+    def __new__(cls, tool_call_name: str):
+        value = str.__new__(cls, "")
+        value._mada_tool_call_name = tool_call_name
+        return value
+
+
 class MagenticOrchestrationStrategy(AgentAsToolOrchestrationStrategy):
     """
     Peer specialist group chat coordinated by a hidden manager agent.
@@ -105,6 +116,39 @@ Guidelines:
             manager_agent=orchestrator.manager_agent,
         )
 
+    @staticmethod
+    def _set_agent_metadata(agent: Agent, attribute: str, value: str) -> None:
+        """
+        Best-effort assignment for Agent Framework metadata attributes.
+        """
+        try:
+            setattr(agent, attribute, value)
+        except (AttributeError, TypeError):
+            try:
+                object.__setattr__(agent, attribute, value)
+            except (AttributeError, TypeError):
+                LOG.warning(
+                    "Unable to set Magentic participant %s on agent %s",
+                    attribute,
+                    getattr(agent, "name", "<unknown>"),
+                )
+
+    def _preserve_participant_metadata(
+        self,
+        orchestrator: "MADAOrchestrator",
+        participant_configs: List[AgentConfig],
+    ) -> None:
+        """
+        Preserve configured participant IDs and descriptions for Magentic routing.
+        """
+        config_by_name = {config.agent_name: config for config in participant_configs}
+        for agent in orchestrator.specialist_agents:
+            config = config_by_name.get(getattr(agent, "name", ""))
+            if not config:
+                continue
+            self._set_agent_metadata(agent, "id", config.agent_name)
+            self._set_agent_metadata(agent, "description", config.description)
+
     def _build_runtime(self, orchestrator: "MADAOrchestrator"):
         """
         Build a runnable Magentic workflow instance.
@@ -118,67 +162,144 @@ Guidelines:
 
         return builder
 
+    _IGNORED_EVENT_TYPES = frozenset(
+        {
+            "plan",
+            "progress",
+            "replan",
+            "checkpoint",
+            "function_call",
+            "tool_call",
+            "function_result",
+            "tool_result",
+        }
+    )
+
+    _TEXT_KEYS = (
+        "final_output",
+        "final_response",
+        "assistant_response",
+        "response",
+        "output",
+        "content",
+        "text",
+        "contents",
+        "messages",
+        "data",
+    )
+
     def _extract_text(self, payload: Any) -> str:
         """
         Best-effort extraction of a final assistant reply from Magentic results.
         """
         if payload is None:
             return ""
-
         if isinstance(payload, str):
             return payload
+        if isinstance(payload, (list, tuple)):
+            return "".join(
+                text for item in payload if (text := self._extract_text(item))
+            )
 
+        # Get event type (works for dict or object)
+        event_type = ""
         if isinstance(payload, dict):
             event_type = str(payload.get("type") or payload.get("event") or "").lower()
-            if event_type in {"plan", "progress", "replan", "checkpoint"}:
-                return ""
-            for key in (
-                "final_output",
-                "final_response",
-                "assistant_response",
-                "response",
-                "output",
-                "content",
-                "text",
-            ):
-                value = payload.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-            if event_type in {"", "output"} and "data" in payload:
-                return self._extract_text(payload["data"])
+        else:
+            event_type = str(
+                getattr(payload, "type", "") or getattr(payload, "event", "")
+            ).lower()
+
+        if event_type in self._IGNORED_EVENT_TYPES:
             return ""
 
-        event_type = str(
-            getattr(payload, "type", "") or getattr(payload, "event", "")
-        ).lower()
-        if event_type in {"plan", "progress", "replan", "checkpoint"}:
-            return ""
-
-        for attr in (
-            "final_output",
-            "final_response",
-            "assistant_response",
-            "response",
-            "output",
-            "content",
-            "text",
-        ):
-            value = getattr(payload, attr, None)
+        # Extract text from known keys/attributes
+        for key in self._TEXT_KEYS:
+            value = (
+                payload.get(key)
+                if isinstance(payload, dict)
+                else getattr(payload, key, None)
+            )
             if isinstance(value, str) and value.strip():
                 return value
+            if value is not None:
+                text = self._extract_text(value)
+                if text.strip():
+                    return text
 
-        if event_type in {"", "output"} and hasattr(payload, "data"):
-            data = getattr(payload, "data", None)
-            if data is not None:
-                return self._extract_text(data)
-
+        # Fallback: try to_dict() for objects
         if hasattr(payload, "to_dict"):
             try:
                 return self._extract_text(payload.to_dict())
             except (TypeError, ValueError):
-                return ""
+                pass
 
         return ""
+
+    @staticmethod
+    def _event_type(payload: Any) -> str:
+        """
+        Return a normalized Magentic event type when one is available.
+        """
+        if isinstance(payload, dict):
+            return str(payload.get("type") or payload.get("event") or "").lower()
+        return str(
+            getattr(payload, "type", "") or getattr(payload, "event", "")
+        ).lower()
+
+    def _is_terminal_output_event(self, event: Any) -> bool:
+        """
+        Return whether an event should be exposed as the user-facing answer.
+        """
+        event_type = self._event_type(event)
+        if event_type in {
+            "final",
+            "final_output",
+            "final_response",
+            "output",
+            "result",
+        }:
+            return True
+
+        if event_type:
+            return False
+
+        if isinstance(event, str):
+            return bool(event.strip())
+
+        for key in (
+            "final_output",
+            "final_response",
+            "assistant_response",
+            "role",
+            "content",
+            "contents",
+            "messages",
+            "text",
+        ):
+            if isinstance(event, dict) and key in event:
+                return True
+            if hasattr(event, key):
+                return True
+
+        if hasattr(event, "to_dict"):
+            try:
+                return self._is_terminal_output_event(event.to_dict())
+            except (TypeError, ValueError):
+                return False
+
+        return False
+
+    def _is_final_result_event(self, event: Any) -> bool:
+        """
+        Return whether an event is an aggregate final result rather than a delta.
+        """
+        event_type = self._event_type(event)
+        if event_type in {"final", "final_output", "final_response", "result"}:
+            return True
+        if event_type:
+            return False
+        return self._is_terminal_output_event(event)
 
     @staticmethod
     def _transcript_to_messages(
@@ -208,12 +329,36 @@ Guidelines:
         )
 
     @staticmethod
+    def _conversation_history_messages(
+        history: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Remove interface background-task bookkeeping from persisted chat history.
+        """
+        messages = []
+        for message in history:
+            role = str(message.get("role") or "").strip().lower()
+            content = str(message.get("content") or "").strip()
+            header = content.split("\n", 1)[0]
+            is_background_status = role == "assistant" and (
+                (content.startswith("[task-") and "Started in background." in content)
+                or (
+                    content.startswith("[")
+                    and "] Background tool `" in header
+                    and header.endswith(":")
+                )
+            )
+            if not is_background_status:
+                messages.append(message)
+        return messages
+
+    @staticmethod
     def _call_notices_from_event(
         event: Any,
         tool_calls: List[Any],
     ) -> List[str]:
         """
-        Return background-handoff notices from Magentic group-chat events.
+        Return invisible handoff signals for Magentic group-chat events.
         """
         event_type = str(
             event.get("type") if isinstance(event, dict) else getattr(event, "type", "")
@@ -251,7 +396,7 @@ Guidelines:
             return []
 
         tool_calls.append(call_key)
-        return [f"\n[Calling: {participant_name}]\n"]
+        return [_InternalToolCallSignal(participant_name)]
 
     async def _iter_result_events(
         self,
@@ -352,6 +497,7 @@ Guidelines:
         """
         Stream Magentic notices and return the final assistant reply as an event.
         """
+        streamed_text_parts = []
         final_text = ""
         tool_calls = []
         async for event in self._iter_workflow_events(
@@ -364,11 +510,24 @@ Guidelines:
                 ):
                     yield "notice", notice
 
-            event_text = self._extract_text(event)
-            if event_text:
-                final_text = event_text
+            if not self._is_terminal_output_event(event):
+                continue
 
-        yield "final", final_text
+            event_text = self._extract_text(event)
+            if not event_text:
+                continue
+
+            if self._is_final_result_event(event):
+                final_text = event_text
+                if not streamed_text_parts:
+                    yield "chunk", event_text
+                continue
+
+            if event_text:
+                streamed_text_parts.append(event_text)
+                yield "chunk", event_text
+
+        yield "final", final_text or "".join(streamed_text_parts)
 
     async def _run_workflow(
         self,
@@ -397,6 +556,11 @@ Guidelines:
         """
         Initialize the Magentic orchestration flow end to end.
         """
+        if MagenticBuilder is None:
+            raise RuntimeError(
+                "Magentic orchestration requires agent_framework MagenticBuilder support"
+            )
+
         orchestrator.specialist_agents = []
         orchestrator._mcp_tool_count = 0
         orchestrator._agent_descriptions = {}
@@ -408,6 +572,10 @@ Guidelines:
         )
         active_participant_configs = self._resolve_active_participant_configs(
             orchestrator, participant_configs
+        )
+        self._preserve_participant_metadata(
+            orchestrator,
+            active_participant_configs,
         )
 
         if not active_participant_configs:
@@ -442,10 +610,21 @@ Guidelines:
 
         transcript_messages = orchestrator._normalize_transcript_messages(messages)
         try:
-            response = await self._run_workflow(orchestrator, transcript_messages)
-            if response:
-                yield response
-            else:
+            streamed = False
+            final_text = ""
+            async for kind, value in self._stream_workflow_response(
+                orchestrator,
+                transcript_messages,
+                include_tool_notices=False,
+            ):
+                if kind == "chunk":
+                    streamed = True
+                    yield value
+                elif kind == "final":
+                    final_text = value
+            if not streamed and final_text:
+                yield final_text
+            elif not final_text:
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
             error_msg = f"Error processing message: {e}"
@@ -467,6 +646,7 @@ Guidelines:
             return
 
         try:
+            streamed_response = False
             if isolated_session:
                 transcript_messages = orchestrator._normalize_transcript_messages(
                     [{"role": "user", "content": message}]
@@ -479,6 +659,9 @@ Guidelines:
                 ):
                     if kind == "notice":
                         yield value
+                    elif kind == "chunk":
+                        streamed_response = True
+                        yield value
                     elif kind == "final":
                         aggregated_assistant_reply = value
                 orchestrator._persist_isolated_response(
@@ -488,6 +671,7 @@ Guidelines:
             else:
                 async with orchestrator._session_lock:
                     history = orchestrator.session_manager.load_history()
+                    history = self._conversation_history_messages(history)
                     transcript_messages = orchestrator._normalize_transcript_messages(
                         [*history, {"role": "user", "content": message}]
                     )
@@ -499,6 +683,9 @@ Guidelines:
                     ):
                         if kind == "notice":
                             yield value
+                        elif kind == "chunk":
+                            streamed_response = True
+                            yield value
                         elif kind == "final":
                             aggregated_assistant_reply = value
                     orchestrator._persist_completed_turn(
@@ -508,10 +695,10 @@ Guidelines:
                         }
                     )
 
-            if aggregated_assistant_reply.strip():
-                yield aggregated_assistant_reply
-            else:
+            if not aggregated_assistant_reply.strip():
                 LOG.warning("No final assistant text received from Magentic workflow")
+            elif not streamed_response:
+                yield aggregated_assistant_reply
         except Exception as e:
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)

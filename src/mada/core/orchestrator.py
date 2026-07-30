@@ -715,12 +715,6 @@ Guidelines:
             f"{conversation}"
         )
 
-    def build_prompt_from_openai_messages(self, messages: List[Dict[str, Any]]) -> str:
-        """
-        Flatten OpenAI-style chat messages into a single prompt.
-        """
-        return self.build_prompt_from_transcript(messages)
-
     async def process_openai_messages(
         self,
         messages: List[Dict[str, Any]],
@@ -817,6 +811,10 @@ Guidelines:
             RuntimeError: If the shared orchestrator session is not initialized.
         """
         if isolated_session:
+            if self.planning_agent is None:
+                raise RuntimeError(
+                    "Cannot create isolated session: planning_agent not initialized (magentic mode does not support isolated sessions)"
+                )
             return None, self.planning_agent.create_session(), {}
 
         async with self._session_lock:
@@ -1039,6 +1037,20 @@ Guidelines:
             message,
             isolated_session=isolated_session,
         ):
+            internal_tool_call_name = getattr(
+                response_chunk,
+                "_mada_tool_call_name",
+                None,
+            )
+            if (
+                first_tool_call
+                and first_tool_state is not None
+                and internal_tool_call_name
+            ):
+                first_tool_state["name"] = str(internal_tool_call_name)
+                first_tool_call.set()
+                continue
+
             response_chunks.append(response_chunk)
             if (
                 first_tool_call

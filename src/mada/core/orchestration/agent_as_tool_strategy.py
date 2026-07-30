@@ -80,9 +80,6 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                 )
                 continue
 
-            LOG.warning(f"Agent {config.agent_name} has no MCP servers configured")
-            failed_agents.append(config.agent_name)
-
         return all_tools, failed_servers, failed_agents
 
     async def _connect_configured_agent(
