@@ -7,6 +7,7 @@ Magentic orchestration strategy implementation.
 
 import asyncio
 import logging
+import re
 import traceback
 from collections.abc import AsyncIterable
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Tuple
@@ -149,17 +150,25 @@ Guidelines:
             self._set_agent_metadata(agent, "id", config.agent_name)
             self._set_agent_metadata(agent, "description", config.description)
 
-    def _build_runtime(self, orchestrator: "MADAOrchestrator"):
+    def _build_runtime(self, orchestrator: "MADAOrchestrator", *, cache: bool = True):
         """
         Build a runnable Magentic workflow instance.
         """
+        if cache and hasattr(orchestrator, "_cached_magentic_runtime"):
+            return orchestrator._cached_magentic_runtime
+
         builder = self._create_builder(orchestrator)
 
         for method_name in ("build", "create_workflow", "create"):
             method = getattr(builder, method_name, None)
             if callable(method):
-                return method()
+                runtime = method()
+                if cache:
+                    orchestrator._cached_magentic_runtime = runtime
+                return runtime
 
+        if cache:
+            orchestrator._cached_magentic_runtime = builder
         return builder
 
     _IGNORED_EVENT_TYPES = frozenset(
@@ -233,6 +242,14 @@ Guidelines:
                 return self._extract_text(payload.to_dict())
             except (TypeError, ValueError):
                 pass
+
+        # Final fallback: scan all string attributes/keys
+        items = payload.items() if isinstance(payload, dict) else []
+        if not items and hasattr(payload, "__dict__"):
+            items = payload.__dict__.items()
+        for key, value in items:
+            if isinstance(value, str) and value.strip():
+                return value
 
         return ""
 
@@ -322,14 +339,20 @@ Guidelines:
         """
         Return whether the installed Magentic runtime rejected multi-message input.
         """
-        error_message = str(error)
+        error_message = str(error).lower()
         return (
-            "Magentic only support a single task message" in error_message
-            or "Magentic only supports a single task message" in error_message
+            "single" in error_message
+            and ("task" in error_message or "message" in error_message)
+            and ("magentic" in error_message or "support" in error_message)
         )
 
-    @staticmethod
+    _BACKGROUND_TASK_PATTERN = re.compile(
+        r"^\[(?:task-|[^\]]+\]\s*Background\s+tool\s+`)", re.IGNORECASE
+    )
+
+    @classmethod
     def _conversation_history_messages(
+        cls,
         history: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """
@@ -339,14 +362,8 @@ Guidelines:
         for message in history:
             role = str(message.get("role") or "").strip().lower()
             content = str(message.get("content") or "").strip()
-            header = content.split("\n", 1)[0]
-            is_background_status = role == "assistant" and (
-                (content.startswith("[task-") and "Started in background." in content)
-                or (
-                    content.startswith("[")
-                    and "] Background tool `" in header
-                    and header.endswith(":")
-                )
+            is_background_status = role == "assistant" and bool(
+                cls._BACKGROUND_TASK_PATTERN.match(content)
             )
             if not is_background_status:
                 messages.append(message)
@@ -355,7 +372,7 @@ Guidelines:
     @staticmethod
     def _call_notices_from_event(
         event: Any,
-        tool_calls: List[Any],
+        tool_calls: Dict[Tuple[Any, str], int],
     ) -> List[str]:
         """
         Return invisible handoff signals for Magentic group-chat events.
@@ -392,10 +409,7 @@ Guidelines:
             else getattr(data, "round_index", None)
         )
         call_key = (round_index, participant_name)
-        if call_key in tool_calls:
-            return []
-
-        tool_calls.append(call_key)
+        tool_calls[call_key] = tool_calls.get(call_key, 0) + 1
         return [_InternalToolCallSignal(participant_name)]
 
     async def _iter_result_events(
@@ -442,6 +456,14 @@ Guidelines:
             if callable(method):
                 return method(message_payload)
 
+        for attr_name in dir(runtime):
+            if attr_name.startswith("_"):
+                continue
+            if "run" in attr_name.lower() or "invoke" in attr_name.lower():
+                method = getattr(runtime, attr_name, None)
+                if callable(method):
+                    return method(message_payload)
+
         raise RuntimeError(
             "Unable to execute Magentic workflow with the installed builder."
         )
@@ -464,7 +486,7 @@ Guidelines:
             ]
 
         try:
-            runtime = self._build_runtime(orchestrator)
+            runtime = self._build_runtime(orchestrator, cache=True)
             result = self._start_runtime(runtime, structured_messages)
             async for event in self._iter_result_events(result):
                 yield event
@@ -475,7 +497,7 @@ Guidelines:
             ):
                 raise
 
-        runtime = self._build_runtime(orchestrator)
+        runtime = self._build_runtime(orchestrator, cache=False)
         fallback_message = Message(
             role="user",
             contents=[orchestrator.build_prompt_from_transcript(transcript_messages)],
@@ -498,8 +520,8 @@ Guidelines:
         Stream Magentic notices and return the final assistant reply as an event.
         """
         streamed_text_parts = []
-        final_text = ""
-        tool_calls = []
+        final_text_parts = []
+        tool_calls = {}
         async for event in self._iter_workflow_events(
             orchestrator, transcript_messages
         ):
@@ -518,7 +540,7 @@ Guidelines:
                 continue
 
             if self._is_final_result_event(event):
-                final_text = event_text
+                final_text_parts.append(event_text)
                 if not streamed_text_parts:
                     yield "chunk", event_text
                 continue
@@ -527,7 +549,8 @@ Guidelines:
                 streamed_text_parts.append(event_text)
                 yield "chunk", event_text
 
-        yield "final", final_text or "".join(streamed_text_parts)
+        final_text = "".join(final_text_parts) or "".join(streamed_text_parts)
+        yield "final", final_text
 
     async def _run_workflow(
         self,
@@ -590,6 +613,8 @@ Guidelines:
             agent_configs=agent_configs,
             participant_configs=active_participant_configs,
         )
+        orchestrator._cached_magentic_runtime = None
+        self._build_runtime(orchestrator, cache=True)
 
         status = self._build_status(orchestrator, failed_servers, failed_agents)
         LOG.info(status)
@@ -624,8 +649,8 @@ Guidelines:
                     final_text = value
             if not streamed and final_text:
                 yield final_text
-            elif not final_text:
-                LOG.warning("No final assistant text received from Magentic workflow")
+            elif not streamed and not final_text:
+                LOG.warning("No assistant text received from Magentic workflow")
         except Exception as e:
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)
@@ -695,9 +720,9 @@ Guidelines:
                         }
                     )
 
-            if not aggregated_assistant_reply.strip():
-                LOG.warning("No final assistant text received from Magentic workflow")
-            elif not streamed_response:
+            if not streamed_response and not aggregated_assistant_reply.strip():
+                LOG.warning("No assistant text received from Magentic workflow")
+            elif not streamed_response and aggregated_assistant_reply.strip():
                 yield aggregated_assistant_reply
         except Exception as e:
             error_msg = f"Error processing message: {e}"
