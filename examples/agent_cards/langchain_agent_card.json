@@ -1,0 +1,26 @@
+{
+  "protocolVersion": "0.3.0",
+  "name": "LangChainAgent",
+  "description": "Table reader specialist that can load and display a small built-in CSV table by calling its MCP table-reader tool.",
+  "url": "http://localhost:9001",
+  "version": "0.1.0",
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "table-reader-tool",
+      "name": "CSV table reader",
+      "description": "Read a small built-in experiment CSV table and return the rows as text.",
+      "tags": ["table", "csv", "rows", "mcp"]
+    },
+    {
+      "id": "langchain-chat",
+      "name": "LangChain chat",
+      "description": "Answer follow-up questions about the table-reader output.",
+      "tags": ["table", "chat", "summary"]
+    }
+  ]
+}

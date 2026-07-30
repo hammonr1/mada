@@ -194,7 +194,9 @@ class MADAOpenAIAPIService:
             )
             await orchestrator.__aenter__()
             await orchestrator.initialize_orchestrator(
-                self.config.agents, self.config.mcp_servers
+                self.config.agents,
+                self.config.mcp_servers,
+                getattr(self.config, "a2a_agents", {}),
             )
             self.orchestrator = orchestrator
         except BaseException as exc:

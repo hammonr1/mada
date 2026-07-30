@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Dict, List, Tuple
 
 from agent_framework import MCPStdioTool
 
-from mada.core.config import AgentConfig, MCPServerConfig
+from mada.core.config import AgentConfig, MCPServerConfig, RemoteA2AAgentConfig
 from mada.core.orchestration.base_strategy import BaseOrchestrationStrategy
 
 if TYPE_CHECKING:
@@ -242,6 +242,7 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
             (
                 "Connection Successful: Orchestrator initialized with "
                 f"{orchestrator._mcp_tool_count} MCP Servers and "
+                f"{len(orchestrator.a2a_agents)} remote A2A agents and "
                 f"{len(orchestrator.specialist_agents) + 1} agents"
             )
         ]
@@ -263,11 +264,27 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
 
         return "\n".join(status_parts)
 
+    def _remote_a2a_tool_labels(self, orchestrator: "MADAOrchestrator") -> List[str]:
+        """
+        Build user-facing labels for remote A2A agents.
+        """
+        labels = []
+        for agent_name, agent_config in orchestrator.a2a_agents.items():
+            card = orchestrator._a2a_agent_cards.get(agent_name, {})
+            description = (
+                card.get("description")
+                or agent_config.description
+                or f"Remote A2A agent at {agent_config.url}"
+            )
+            labels.append(f"A2A: {agent_name} - {description}")
+        return labels
+
     async def initialize(
         self,
         orchestrator: "MADAOrchestrator",
         agent_configs: List[AgentConfig],
         mcp_servers: Dict[str, MCPServerConfig] | None = None,
+        a2a_agents: Dict[str, RemoteA2AAgentConfig] | None = None,
     ) -> Tuple[str, List[str]]:
         """
         Initialize the agent-as-tool orchestration flow end to end.
@@ -280,9 +297,12 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         orchestrator._mcp_tool_count = 0
         participant_configs = orchestrator.resolve_participant_configs(agent_configs)
         orchestrator.mcp_servers = mcp_servers or {}
+        orchestrator.a2a_agents = a2a_agents or {}
+        await orchestrator._load_remote_a2a_agent_cards()
         all_tools, failed_servers, failed_agents = await self._initialize_participants(
             orchestrator, participant_configs
         )
+        all_tools.extend(self._remote_a2a_tool_labels(orchestrator))
         active_participant_configs = self._resolve_active_participant_configs(
             orchestrator, participant_configs
         )

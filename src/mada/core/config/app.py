@@ -18,6 +18,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from mada.core.config.agents import AgentConfig
+from mada.core.config.a2a import (
+    A2AConfig,
+    RemoteA2AAgentConfig,
+    load_a2a_agents_config,
+    load_a2a_config,
+)
 from mada.core.config.database import DatabaseConfig, load_database_config
 from mada.core.config.interface import InterfaceConfig
 from mada.core.config.mcp_servers import MCPServerConfig
@@ -53,6 +59,8 @@ class AppConfig:
     mcp_servers: Dict[str, MCPServerConfig] = None  # MCP server configurations
     interface: InterfaceConfig = None  # Optional, used only by the Gradio app
     orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
+    a2a: A2AConfig = field(default_factory=A2AConfig)
+    a2a_agents: Dict[str, RemoteA2AAgentConfig] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "AppConfig":
@@ -100,6 +108,9 @@ class AppConfig:
             [agent.agent_name for agent in agent_cfgs]
         )
         app_conf["orchestration"] = orchestration_cfg
+
+        app_conf["a2a"] = load_a2a_config(config_dict.get("a2a"))
+        app_conf["a2a_agents"] = load_a2a_agents_config(config_dict.get("a2a_agents"))
 
         # Load MCP servers configuration (optional)
         python_exe = config_dict.get("python_executable", sys.executable)

@@ -267,7 +267,9 @@ class MADACLIInterface:
                 print("\nInitializing agents and MCP servers...")
                 try:
                     status, tools = await orchestrator.initialize_orchestrator(
-                        self.config.agents, self.config.mcp_servers
+                        self.config.agents,
+                        self.config.mcp_servers,
+                        getattr(self.config, "a2a_agents", {}),
                     )
                     print(f"Status: {status}")
                     print(f"Orchestration mode: {self.orchestration_config.mode}")
