@@ -227,12 +227,19 @@ If `participants` is omitted, MADA includes every configured agent except
 
 MADA can participate in Agent-to-Agent (A2A) workflows in two directions:
 
-- `a2a_agents` lists remote A2A agents that MADA can call as tools.
-- `a2a_self` describes MADA's own A2A identity when you run MADA with `mada-a2a`.
+- `a2a_agents` is the client-side configuration. It lists remote A2A agents
+  that MADA can call as tools from the orchestrator.
+- `a2a_self` is the server-side configuration. It describes MADA's own A2A
+  identity when you run MADA with `mada-a2a` so other agents can discover and
+  call MADA.
 
 These settings do not replace CLI or Gradio. CLI and Gradio are interactive
 interfaces for users. A2A mode starts an HTTP service so other A2A agents can
 discover MADA and delegate tasks to it.
+
+In code, the same split is reflected by the modules: `mada.core.a2a_client`
+handles outbound calls from MADA to remote A2A agents, while
+`mada.interfaces.a2a.main` exposes MADA itself as an inbound A2A service.
 
 ### Remote A2A Agents
 

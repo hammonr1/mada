@@ -7,6 +7,11 @@ Agent-to-Agent HTTP interface for MADA Orchestrator.
 This module exposes the configured MADA planning agent as an A2A-compatible
 JSON-RPC service. The MADA agent card is available under the standard
 `/.well-known/agent-card.json` path.
+
+This is the server-side A2A entry point: use it when another A2A client or
+agent needs to discover MADA and send work to MADA. The client-side support
+for MADA calling other A2A agents lives in `mada.core.a2a_client` and is wired
+through the `a2a_agents` configuration block.
 """
 
 from __future__ import annotations

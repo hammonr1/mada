@@ -3,6 +3,10 @@
 
 """
 A2A interface and remote agent configuration definitions.
+
+`A2AConfig` models MADA's own A2A identity for `a2a_self` when MADA is run as
+an A2A server. `RemoteA2AAgentConfig` models remote agents under `a2a_agents`
+that the orchestrator can call as tools.
 """
 
 from dataclasses import dataclass, field
