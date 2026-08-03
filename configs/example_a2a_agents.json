@@ -21,20 +21,21 @@
       "instructions": "You are LocalCritiqueAgent, a rigorous reviewer. Identify flaws, risky assumptions, missing context, and concrete improvements."
     }
   ],
-  "a2a_agents": {
-    "LangChainAgent": {
-      "url": "http://localhost:9111/",
-      "card_url": "http://localhost:9111/.well-known/agent-card.json"
+  "a2a": {
+    "agents": {
+      "LangChainAgent": {
+        "url": "http://localhost:9111/",
+        "card_url": "http://localhost:9111/.well-known/agent-card.json"
+      },
+      "GoogleADKAgent": {
+        "url": "http://localhost:9112/",
+        "card_url": "http://localhost:9112/.well-known/agent-card.json"
+      }
     },
-    "GoogleADKAgent": {
-      "url": "http://localhost:9112/",
-      "card_url": "http://localhost:9112/.well-known/agent-card.json"
+    "self": {
+      "card_path": "agent_cards/mada_orchestrator_card.json",
+      "url": "http://localhost:9120"
     }
-  },
-  "a2a_self": {
-    "card_path": "agent_cards/mada_orchestrator_card.json",
-    "url": "http://localhost:9120",
-    "version": "0.2.0"
   },
   "orchestration": {
     "mode": "agent-as-tool",

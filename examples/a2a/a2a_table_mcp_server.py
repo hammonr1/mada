@@ -3,6 +3,7 @@
 
 """
 CSV table-reader MCP server used by the LangChain A2A example agent.
+This is separate from MADA as this only used for A2A examples.
 """
 
 from __future__ import annotations

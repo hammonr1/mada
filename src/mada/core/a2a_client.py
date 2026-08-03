@@ -5,9 +5,9 @@
 Small A2A JSON-RPC client used by the MADA orchestrator.
 
 This is the client-side A2A helper: the orchestrator uses it to call remote
-A2A agents configured under `a2a_agents`. The server-side interface that
+A2A agents configured under `a2a.agents`. The server-side interface that
 exposes MADA itself as an A2A agent lives in `mada.interfaces.a2a.main` and
-uses the `a2a_self` configuration block.
+uses the `a2a.self` configuration block.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "0.3.0",
+  "protocolVersion": "1.0.0",
   "name": "LangChainAgent",
   "description": "Table reader specialist that can load and display a small built-in CSV table by calling its MCP table-reader tool.",
   "url": "http://localhost:9001",

@@ -1001,6 +1001,7 @@ class TestMADAA2ACmd:
 
             assert response.status_code == 200
             payload = response.json()
+            assert payload["protocolVersion"] == "1.0.0"
             assert payload["name"] == "MADA Test"
             assert payload["description"] == "Test A2A agent"
             assert payload["url"] == "https://mada.example/a2a"
@@ -1016,7 +1017,7 @@ class TestMADAA2ACmd:
             card_path.write_text(
                 json.dumps(
                     {
-                        "protocolVersion": "0.3.0",
+                        "protocolVersion": "1.0.0",
                         "name": "FileBackedMADA",
                         "description": "Loaded from a card file",
                         "url": "http://placeholder",
@@ -1041,6 +1042,7 @@ class TestMADAA2ACmd:
             )
             payload = service.build_agent_card()
 
+            assert payload["protocolVersion"] == "1.0.0"
             assert payload["name"] == "FileBackedMADA"
             assert payload["description"] == "Loaded from a card file"
             assert payload["url"] == "https://mada.example/a2a"

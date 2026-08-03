@@ -64,7 +64,11 @@ class AppConfig:
     a2a_agents: Dict[str, RemoteA2AAgentConfig] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "AppConfig":
+    def from_dict(
+        cls,
+        config_dict: Dict[str, Any],
+        a2a_card_path_base: str | Path | None = None,
+    ) -> "AppConfig":
         """
         Create an AppConfig instance from a dictionary.
 
@@ -110,8 +114,12 @@ class AppConfig:
         )
         app_conf["orchestration"] = orchestration_cfg
 
-        app_conf["a2a"] = load_a2a_config(config_dict.get("a2a_self"))
-        app_conf["a2a_agents"] = load_a2a_agents_config(config_dict.get("a2a_agents"))
+        a2a_self_config, a2a_agents_config = _get_a2a_config_blocks(config_dict)
+        app_conf["a2a"] = load_a2a_config(
+            a2a_self_config,
+            card_path_base=a2a_card_path_base,
+        )
+        app_conf["a2a_agents"] = load_a2a_agents_config(a2a_agents_config)
 
         # Load MCP servers configuration (optional)
         python_exe = config_dict.get("python_executable", sys.executable)
@@ -133,6 +141,25 @@ class AppConfig:
         return cls(**app_conf)
 
 
+def _get_a2a_config_blocks(
+    config_dict: Dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """
+    Return server-side and remote-agent A2A blocks from nested config.
+    """
+    if "a2a_self" in config_dict or "a2a_agents" in config_dict:
+        raise ValueError("Use 'a2a.self' and 'a2a.agents' for A2A configuration")
+
+    a2a_section = config_dict.get("a2a")
+    if a2a_section is None:
+        return None, None
+
+    if not isinstance(a2a_section, dict):
+        raise ValueError("'a2a' must be an object")
+
+    return a2a_section.get("self"), a2a_section.get("agents")
+
+
 def load_config_from_json(path: str) -> AppConfig:
     """
     Load application configuration from a JSON file.
@@ -147,14 +174,4 @@ def load_config_from_json(path: str) -> AppConfig:
     with open(config_path, "r") as f:
         config_dict = json.load(f)
 
-    a2a_config = config_dict.get("a2a_self")
-    if isinstance(a2a_config, dict):
-        card_path = a2a_config.get("card_path")
-        if card_path:
-            resolved_card_path = Path(str(card_path).strip())
-            if not resolved_card_path.is_absolute():
-                a2a_config["card_path"] = str(
-                    (config_path.parent / resolved_card_path).resolve()
-                )
-
-    return AppConfig.from_dict(config_dict)
+    return AppConfig.from_dict(config_dict, a2a_card_path_base=config_path.parent)

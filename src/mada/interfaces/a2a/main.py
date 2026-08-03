@@ -11,7 +11,7 @@ JSON-RPC service. The MADA agent card is available under the standard
 This is the server-side A2A entry point: use it when another A2A client or
 agent needs to discover MADA and send work to MADA. The client-side support
 for MADA calling other A2A agents lives in `mada.core.a2a_client` and is wired
-through the `a2a_agents` configuration block.
+through the `a2a.agents` configuration block.
 """
 
 from __future__ import annotations
@@ -61,18 +61,7 @@ if TYPE_CHECKING:
     from mada.core.orchestrator import MADAOrchestrator
 
 
-def _get_orchestration_config(config: AppConfig) -> OrchestrationConfig:
-    """
-    Return the configured orchestration settings or the default configuration.
-    """
-    return getattr(config, "orchestration", None) or OrchestrationConfig()
-
-
-def _get_a2a_config(config: AppConfig) -> A2AConfig:
-    """
-    Return the configured self A2A settings or the default configuration.
-    """
-    return getattr(config, "a2a", None) or A2AConfig()
+A2A_PROTOCOL_VERSION = "1.0.0"
 
 
 class A2AStartupError(RuntimeError):
@@ -136,7 +125,7 @@ class MADAA2AService:
         Initialize the service wrapper for one shared orchestrator instance.
         """
         self.config = config
-        self.a2a_config = _get_a2a_config(config)
+        self.a2a_config = getattr(config, "a2a", None) or A2AConfig()
         self.public_url = self.a2a_config.url or public_url
         self.api_key = api_key
         self.bearer_token = bearer_token
@@ -157,7 +146,8 @@ class MADAA2AService:
             orchestrator = MADAOrchestrator(
                 model_config=self.config.model,
                 database_config=self.config.database,
-                orchestration_config=_get_orchestration_config(self.config),
+                orchestration_config=getattr(self.config, "orchestration", None)
+                or OrchestrationConfig(),
                 bearer_token=self.bearer_token,
             )
             await orchestrator.__aenter__()
@@ -217,7 +207,7 @@ class MADAA2AService:
         if self.a2a_config.card_path:
             card = self._load_agent_card_file()
             card["url"] = self.public_url
-            card.setdefault("protocolVersion", "0.3.0")
+            card["protocolVersion"] = A2A_PROTOCOL_VERSION
             card.setdefault("capabilities", {"streaming": True})
             card.setdefault("defaultInputModes", ["text/plain"])
             card.setdefault("defaultOutputModes", ["text/plain"])
@@ -225,7 +215,7 @@ class MADAA2AService:
             return card
 
         return {
-            "protocolVersion": "0.3.0",
+            "protocolVersion": A2A_PROTOCOL_VERSION,
             "name": self.a2a_config.name,
             "description": self.a2a_config.description,
             "url": self.public_url,

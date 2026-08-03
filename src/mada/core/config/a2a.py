@@ -4,12 +4,13 @@
 """
 A2A interface and remote agent configuration definitions.
 
-`A2AConfig` models MADA's own A2A identity for `a2a_self` when MADA is run as
-an A2A server. `RemoteA2AAgentConfig` models remote agents under `a2a_agents`
+`A2AConfig` models MADA's own A2A identity for `a2a.self` when MADA is run as
+an A2A server. `RemoteA2AAgentConfig` models remote agents under `a2a.agents`
 that the orchestrator can call as tools.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
+from pathlib import Path
 from typing import Any
 
 from mada.core.config.utils import expand_env_vars
@@ -39,8 +40,9 @@ class A2AConfig:
     url: str = ""
     card_path: str = ""
     skills: list[dict[str, Any]] = field(default_factory=list)
+    card_path_base: InitVar[str | Path | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, card_path_base: str | Path | None) -> None:
         """
         Normalize fields and validate generated-card skill entries.
         """
@@ -52,17 +54,26 @@ class A2AConfig:
         self.version = expand_env_vars(self.version or "").strip() or "0.2.0"
         self.url = expand_env_vars(self.url or "").strip()
         self.card_path = expand_env_vars(self.card_path or "").strip()
+        if self.card_path and card_path_base:
+            resolved_card_path = Path(self.card_path)
+            if not resolved_card_path.is_absolute():
+                self.card_path = str(
+                    (Path(card_path_base) / resolved_card_path).resolve()
+                )
 
         if self.skills is None:
             self.skills = []
         if not isinstance(self.skills, list):
-            raise ValueError("'a2a_self.skills' must be a list")
+            raise ValueError("'a2a.self.skills' must be a list")
         for skill in self.skills:
             if not isinstance(skill, dict):
-                raise ValueError("'a2a_self.skills' must contain only objects")
+                raise ValueError("'a2a.self.skills' must contain only objects")
 
 
-def load_a2a_config(config_dict: dict[str, Any] | None) -> A2AConfig:
+def load_a2a_config(
+    config_dict: dict[str, Any] | None,
+    card_path_base: str | Path | None = None,
+) -> A2AConfig:
     """
     Load self A2A configuration from a dictionary.
 
@@ -73,12 +84,12 @@ def load_a2a_config(config_dict: dict[str, Any] | None) -> A2AConfig:
         A validated A2A configuration object.
     """
     if config_dict is None:
-        return A2AConfig()
+        return A2AConfig(card_path_base=card_path_base)
 
     if not isinstance(config_dict, dict):
-        raise ValueError("'a2a_self' must be an object")
+        raise ValueError("'a2a.self' must be an object")
 
-    return A2AConfig(**config_dict)
+    return A2AConfig(**config_dict, card_path_base=card_path_base)
 
 
 @dataclass
@@ -111,14 +122,14 @@ class RemoteA2AAgentConfig:
         """
         self.url = expand_env_vars(self.url or "").strip()
         if not self.url:
-            raise ValueError("'a2a_agents.<name>.url' must not be empty")
+            raise ValueError("'a2a.agents.<name>.url' must not be empty")
 
         self.description = expand_env_vars(self.description or "").strip()
         self.card_url = expand_env_vars(self.card_url or "").strip()
         self.api_key = expand_env_vars(self.api_key or "").strip()
 
         if not isinstance(self.headers, dict):
-            raise ValueError("'a2a_agents.<name>.headers' must be an object")
+            raise ValueError("'a2a.agents.<name>.headers' must be an object")
 
         expanded_headers = {}
         for key, value in self.headers.items():
@@ -136,15 +147,15 @@ def load_a2a_agents_config(
         return {}
 
     if not isinstance(config_dict, dict):
-        raise ValueError("'a2a_agents' must be an object")
+        raise ValueError("'a2a.agents' must be an object")
 
     agents = {}
     for name, agent_config in config_dict.items():
         if not isinstance(agent_config, dict):
-            raise ValueError("'a2a_agents' values must be objects")
+            raise ValueError("'a2a.agents' values must be objects")
         clean_name = str(name).strip()
         if not clean_name:
-            raise ValueError("'a2a_agents' must not contain empty names")
+            raise ValueError("'a2a.agents' must not contain empty names")
         agents[clean_name] = RemoteA2AAgentConfig(**agent_config)
 
     return agents

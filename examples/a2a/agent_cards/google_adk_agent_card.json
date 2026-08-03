@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "0.3.0",
+  "protocolVersion": "1.0.0",
   "name": "GoogleADKAgent",
   "description": "Column average specialist that can compute averages for numeric columns in a small built-in CSV table by calling its MCP average tool.",
   "url": "http://localhost:9002",

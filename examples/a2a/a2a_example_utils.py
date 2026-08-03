@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 DEFAULT_CONFIG_PATH = (
-    Path(__file__).parent.parent / "configs" / "example_a2a_agents.json"
+    Path(__file__).parent.parent.parent / "configs" / "example_a2a_agents.json"
 )
 
 

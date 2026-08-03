@@ -8,82 +8,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from a2a_example_config import DEFAULT_CONFIG_PATH, load_model_settings
+from a2a_example_utils import DEFAULT_CONFIG_PATH, load_model_settings
 from fastapi import FastAPI, HTTPException
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.messages import ToolMessage
 from langchain_openai import ChatOpenAI
+from mada.interfaces.a2a.main import (
+    _build_task,
+    _extract_message_text,
+    _ids_from_params,
+)
 
 
 DEFAULT_MCP_URL = "http://localhost:9101/mcp"
 DEFAULT_AGENT_CARD_PATH = (
     Path(__file__).parent / "agent_cards" / "langchain_agent_card.json"
 )
-
-
-def extract_message_text(params: dict[str, Any]) -> str:
-    message = params.get("message", params)
-    if isinstance(message, str):
-        return message
-    if not isinstance(message, dict):
-        return ""
-
-    parts = message.get("parts")
-    if not isinstance(parts, list):
-        return str(message.get("text", "") or "")
-
-    text_parts = []
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        if part.get("kind") == "text" or part.get("type") == "text":
-            text = part.get("text")
-            if text:
-                text_parts.append(str(text))
-    return "\n".join(text_parts)
-
-
-def build_task(task_id: str, context_id: str, text: str) -> dict[str, Any]:
-    message_id = f"msg-{uuid.uuid4().hex}"
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    message = {
-        "kind": "message",
-        "messageId": message_id,
-        "role": "agent",
-        "parts": [{"kind": "text", "text": text}],
-        "taskId": task_id,
-        "contextId": context_id,
-    }
-    return {
-        "kind": "task",
-        "id": task_id,
-        "contextId": context_id,
-        "status": {"state": "completed", "timestamp": now, "message": message},
-        "artifacts": [
-            {
-                "artifactId": f"artifact-{uuid.uuid4().hex}",
-                "name": "response",
-                "parts": [{"kind": "text", "text": text}],
-            }
-        ],
-    }
-
-
-def ids_from_params(params: dict[str, Any]) -> tuple[str, str]:
-    message = params.get("message")
-    task_id = params.get("id") or params.get("taskId")
-    context_id = params.get("contextId")
-    if isinstance(message, dict):
-        task_id = task_id or message.get("taskId")
-        context_id = context_id or message.get("contextId")
-    return str(task_id or f"task-{uuid.uuid4().hex}"), str(
-        context_id or f"context-{uuid.uuid4().hex}"
-    )
 
 
 class LangChainA2AAgent:
@@ -195,7 +139,7 @@ def create_app(agent: LangChainA2AAgent, public_url: str) -> FastAPI:
                 "error": {"code": -32602, "message": "'params' must be an object"},
             }
 
-        task = extract_message_text(params).strip()
+        task = _extract_message_text(params).strip()
         if not task:
             return {
                 "jsonrpc": "2.0",
@@ -208,11 +152,11 @@ def create_app(agent: LangChainA2AAgent, public_url: str) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        task_id, context_id = ids_from_params(params)
+        task_id, context_id = _ids_from_params(params)
         return {
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": build_task(task_id, context_id, text),
+            "result": _build_task(task_id, context_id, text),
         }
 
     return app

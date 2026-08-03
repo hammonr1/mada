@@ -227,9 +227,9 @@ If `participants` is omitted, MADA includes every configured agent except
 
 MADA can participate in Agent-to-Agent (A2A) workflows in two directions:
 
-- `a2a_agents` is the client-side configuration. It lists remote A2A agents
+- `a2a.agents` is the client-side configuration. It lists remote A2A agents
   that MADA can call as tools from the orchestrator.
-- `a2a_self` is the server-side configuration. It describes MADA's own A2A
+- `a2a.self` is the server-side configuration. It describes MADA's own A2A
   identity when you run MADA with `mada-a2a` so other agents can discover and
   call MADA.
 
@@ -243,7 +243,7 @@ handles outbound calls from MADA to remote A2A agents, while
 
 ### Remote A2A Agents
 
-Use `a2a_agents` when the MADA orchestrator should delegate work to other A2A
+Use `a2a.agents` when the MADA orchestrator should delegate work to other A2A
 agents. Each configured remote agent is exposed to the planning agent as a tool,
 using the remote agent card for routing context when available.
 
@@ -261,15 +261,17 @@ using the remote agent card for routing context when available.
 #### Example
 
 ```json
-"a2a_agents": {
+"a2a": {
+  "agents": {
     "LangChainAgent": {
-        "url": "http://localhost:9111/",
-        "card_url": "http://localhost:9111/.well-known/agent-card.json"
+      "url": "http://localhost:9111/",
+      "card_url": "http://localhost:9111/.well-known/agent-card.json"
     },
     "GoogleADKAgent": {
-        "url": "http://localhost:9112/",
-        "card_url": "http://localhost:9112/.well-known/agent-card.json"
+      "url": "http://localhost:9112/",
+      "card_url": "http://localhost:9112/.well-known/agent-card.json"
     }
+  }
 }
 ```
 
@@ -279,10 +281,10 @@ launch them with the config path:
 
 ```bash
 pip install -e ".[a2a-examples]"
-python examples/a2a_table_mcp_server.py --port 9101
-python examples/a2a_average_mcp_server.py --port 9102
-python examples/a2a_langchain_agent.py --port 9111 --config configs/example_a2a_agents.json --mcp-url http://localhost:9101/mcp
-python examples/a2a_google_adk_agent.py --port 9112 --config configs/example_a2a_agents.json --mcp-url http://localhost:9102/mcp
+python examples/a2a/a2a_table_mcp_server.py --port 9101
+python examples/a2a/a2a_average_mcp_server.py --port 9102
+python examples/a2a/a2a_langchain_agent.py --port 9111 --config configs/example_a2a_agents.json --mcp-url http://localhost:9101/mcp
+python examples/a2a/a2a_google_adk_agent.py --port 9112 --config configs/example_a2a_agents.json --mcp-url http://localhost:9102/mcp
 ```
 
 Use each example agent's `--model`, `--api-key`, and `--base-url` flags when
@@ -291,14 +293,14 @@ Google ADK example also accepts `--provider`.
 
 ### MADA's A2A Agent Card
 
-Use `a2a_self` when you want MADA itself to be discoverable by other A2A agents.
+Use `a2a.self` when you want MADA itself to be discoverable by other A2A agents.
 This block is used by `mada-a2a` and `mada a2a`; it is not used by CLI or Gradio
-mode.
+mode. These are commands within this repo and not actual MADA repos like `mada-tools`.
 
 The `card_path` value points to a standalone A2A agent card JSON file. Relative
 paths are resolved relative to the configuration file. When the card is served,
 MADA overwrites the card's `url` field with the runtime public URL from
-`a2a_self.url` or `--public-url`.
+`a2a.self.url` or `--public-url`, and advertises A2A protocol `1.0.0`.
 
 #### Fields
 
@@ -306,7 +308,6 @@ MADA overwrites the card's `url` field with the runtime public URL from
 | ----------- | --------------------------------------------------------------------------- | --------- | ------- |
 | `card_path` | Path to MADA's standalone A2A agent card JSON file.                          | No        | None    |
 | `url`       | Public URL advertised in the served agent card.                              | No        | Runtime host and port |
-| `version`   | Version used by the generated card fallback when no `card_path` is supplied. | No        | `0.2.0` |
 | `name`      | Name used by the generated card fallback when no `card_path` is supplied.    | No        | `MADA`  |
 | `description` | Description used by the generated card fallback when no `card_path` is supplied. | No | `MADA multi-agent orchestration service` |
 | `skills`    | Skills used by the generated card fallback when no `card_path` is supplied.  | No        | Derived from configured agents |
@@ -314,10 +315,11 @@ MADA overwrites the card's `url` field with the runtime public URL from
 #### Example
 
 ```json
-"a2a_self": {
+"a2a": {
+  "self": {
     "card_path": "agent_cards/mada_orchestrator_card.json",
     "url": "http://localhost:9120",
-    "version": "0.2.0"
+  }
 }
 ```
 
