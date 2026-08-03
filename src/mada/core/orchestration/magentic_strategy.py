@@ -6,6 +6,7 @@ Magentic orchestration strategy implementation.
 """
 
 import asyncio
+import json
 import logging
 import re
 import traceback
@@ -150,25 +151,17 @@ Guidelines:
             self._set_agent_metadata(agent, "id", config.agent_name)
             self._set_agent_metadata(agent, "description", config.description)
 
-    def _build_runtime(self, orchestrator: "MADAOrchestrator", *, cache: bool = True):
+    def _build_runtime(self, orchestrator: "MADAOrchestrator"):
         """
         Build a runnable Magentic workflow instance.
         """
-        if cache and hasattr(orchestrator, "_cached_magentic_runtime"):
-            return orchestrator._cached_magentic_runtime
-
         builder = self._create_builder(orchestrator)
 
         for method_name in ("build", "create_workflow", "create"):
             method = getattr(builder, method_name, None)
             if callable(method):
-                runtime = method()
-                if cache:
-                    orchestrator._cached_magentic_runtime = runtime
-                return runtime
+                return method()
 
-        if cache:
-            orchestrator._cached_magentic_runtime = builder
         return builder
 
     _IGNORED_EVENT_TYPES = frozenset(
@@ -179,8 +172,6 @@ Guidelines:
             "checkpoint",
             "function_call",
             "tool_call",
-            "function_result",
-            "tool_result",
         }
     )
 
@@ -222,6 +213,9 @@ Guidelines:
         if event_type in self._IGNORED_EVENT_TYPES:
             return ""
 
+        if event_type in ("tool_result", "function_result"):
+            return ""
+
         # Extract text from known keys/attributes
         for key in self._TEXT_KEYS:
             value = (
@@ -236,21 +230,42 @@ Guidelines:
                 if text.strip():
                     return text
 
-        # Fallback: try to_dict() for objects
+        # Check if this is a tool-call-only update (no user-visible text)
+        # AgentResponseUpdate with function_call/tool_call but no text should return empty
+        if isinstance(payload, dict):
+            has_function_call = any(
+                key in payload
+                for key in (
+                    "function_call",
+                    "tool_call",
+                    "function_calls",
+                    "tool_calls",
+                )
+            )
+        else:
+            has_function_call = any(
+                hasattr(payload, key)
+                for key in (
+                    "function_call",
+                    "tool_call",
+                    "function_calls",
+                    "tool_calls",
+                )
+            )
+
+        if has_function_call:
+            # This is a tool invocation, not user-facing text
+            return ""
+
+        # Fallback: try to_dict() for objects (but not if it contains tool calls)
         if hasattr(payload, "to_dict"):
             try:
                 return self._extract_text(payload.to_dict())
             except (TypeError, ValueError):
                 pass
 
-        # Final fallback: scan all string attributes/keys
-        items = payload.items() if isinstance(payload, dict) else []
-        if not items and hasattr(payload, "__dict__"):
-            items = payload.__dict__.items()
-        for key, value in items:
-            if isinstance(value, str) and value.strip():
-                return value
-
+        # No text found - don't fall back to arbitrary attribute scanning
+        # as that returns metadata strings like "agent_response_update"
         return ""
 
     @staticmethod
@@ -266,7 +281,7 @@ Guidelines:
 
     def _is_terminal_output_event(self, event: Any) -> bool:
         """
-        Return whether an event should be exposed as the user-facing answer.
+        Return whether an event should be exposed as output or contains data to preserve.
         """
         event_type = self._event_type(event)
         if event_type in {
@@ -275,6 +290,8 @@ Guidelines:
             "final_response",
             "output",
             "result",
+            "assistant_response",
+            "response",
         }:
             return True
 
@@ -310,13 +327,15 @@ Guidelines:
     def _is_final_result_event(self, event: Any) -> bool:
         """
         Return whether an event is an aggregate final result rather than a delta.
+
+        Untyped streamed Message/dict chunks should be treated as deltas, not finals,
+        to avoid overwriting accumulated text and losing earlier chunks.
         """
         event_type = self._event_type(event)
         if event_type in {"final", "final_output", "final_response", "result"}:
             return True
-        if event_type:
-            return False
-        return self._is_terminal_output_event(event)
+        # Explicitly return False for untyped events - they are streamed deltas
+        return False
 
     @staticmethod
     def _transcript_to_messages(
@@ -340,14 +359,10 @@ Guidelines:
         Return whether the installed Magentic runtime rejected multi-message input.
         """
         error_message = str(error).lower()
-        return (
-            "single" in error_message
-            and ("task" in error_message or "message" in error_message)
-            and ("magentic" in error_message or "support" in error_message)
-        )
+        return "magentic only support" in error_message and "single" in error_message
 
-    _BACKGROUND_TASK_PATTERN = re.compile(
-        r"^\[(?:task-|[^\]]+\]\s*Background\s+tool\s+`)", re.IGNORECASE
+    _BACKGROUND_TASK_STATUS_PATTERN = re.compile(
+        r"^\[(?:task-|[^\]]+)\]\s*(?:Started|Running|Waiting)", re.IGNORECASE
     )
 
     @classmethod
@@ -356,16 +371,17 @@ Guidelines:
         history: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """
-        Remove interface background-task bookkeeping from persisted chat history.
+        Remove transient background-task status messages but retain completed results.
         """
         messages = []
         for message in history:
             role = str(message.get("role") or "").strip().lower()
             content = str(message.get("content") or "").strip()
-            is_background_status = role == "assistant" and bool(
-                cls._BACKGROUND_TASK_PATTERN.match(content)
+            # Only filter transient status updates, not completion messages with results
+            is_status_only = role == "assistant" and bool(
+                cls._BACKGROUND_TASK_STATUS_PATTERN.match(content)
             )
-            if not is_background_status:
+            if not is_status_only:
                 messages.append(message)
         return messages
 
@@ -375,42 +391,329 @@ Guidelines:
         tool_calls: Dict[Tuple[Any, str], int],
     ) -> List[str]:
         """
-        Return invisible handoff signals for Magentic group-chat events.
+        Return invisible handoff signals when real MCP tool calls occur.
+
+        In blocking=False mode, BackgroundTaskManager should detach only after
+        a real tool execution. Actual Magentic tool invocations are surfaced as
+        streamed output events carrying AgentResponseUpdate with function_call,
+        not just executor_invoked events.
         """
         event_type = str(
             event.get("type") if isinstance(event, dict) else getattr(event, "type", "")
         ).lower()
-        if event_type != "group_chat":
+
+        # Check output events for function calls in their data
+        if event_type == "output":
+            data = (
+                event.get("data")
+                if isinstance(event, dict)
+                else getattr(event, "data", None)
+            )
+            if data is None:
+                return []
+
+            # Check if this output contains a function_call (AgentResponseUpdate)
+            # In real Agent Framework streams, tool invocations are carried inside
+            # AgentResponseUpdate.contents, not as top-level attributes
+            has_function_call = False
+            executor_id = None
+
+            if isinstance(data, dict):
+                # Check top-level attributes
+                has_function_call = any(
+                    key in data
+                    for key in (
+                        "function_call",
+                        "tool_call",
+                        "function_calls",
+                        "tool_calls",
+                    )
+                )
+                # Also check contents field for nested tool calls
+                if not has_function_call and "contents" in data:
+                    contents = data.get("contents")
+                    if isinstance(contents, (list, tuple)):
+                        for item in contents:
+                            if isinstance(item, dict) and any(
+                                key in item for key in ("function_call", "tool_call")
+                            ):
+                                has_function_call = True
+                                break
+                executor_id = data.get("executor_id") or data.get("agent_id")
+            else:
+                # Check top-level attributes
+                has_function_call = any(
+                    hasattr(data, key)
+                    for key in (
+                        "function_call",
+                        "tool_call",
+                        "function_calls",
+                        "tool_calls",
+                    )
+                )
+                # Also check contents attribute for nested tool calls
+                if not has_function_call and hasattr(data, "contents"):
+                    contents = getattr(data, "contents", None)
+                    if isinstance(contents, (list, tuple)):
+                        for item in contents:
+                            if hasattr(item, "function_call") or hasattr(
+                                item, "tool_call"
+                            ):
+                                has_function_call = True
+                                break
+                            if isinstance(item, dict) and any(
+                                key in item for key in ("function_call", "tool_call")
+                            ):
+                                has_function_call = True
+                                break
+                executor_id = getattr(data, "executor_id", None) or getattr(
+                    data, "agent_id", None
+                )
+
+            if has_function_call and executor_id:
+                call_key = (None, executor_id)
+                tool_calls[call_key] = tool_calls.get(call_key, 0) + 1
+                return [_InternalToolCallSignal(str(executor_id))]
+
+        # Also check executor_invoked, tool_result, function_result
+        if event_type not in {"executor_invoked", "tool_result", "function_result"}:
             return []
 
-        data = (
+        # For executor_invoked, extract the participant name
+        if event_type == "executor_invoked":
+            data = (
+                event.get("data")
+                if isinstance(event, dict)
+                else getattr(event, "data", None)
+            )
+            if data is None:
+                return []
+
+            # Check if this executor has actual tool calls (not just model-only)
+            # Look for tool invocations in the data
+            has_tools = False
+            if isinstance(data, dict):
+                # Check for tool-related fields that indicate MCP tool usage
+                has_tools = any(
+                    key in data
+                    for key in ("tool_calls", "tools", "function_calls", "functions")
+                )
+            elif hasattr(data, "tool_calls") or hasattr(data, "tools"):
+                has_tools = True
+
+            if not has_tools:
+                return []
+
+            executor_id = (
+                data.get("executor_id")
+                if isinstance(data, dict)
+                else getattr(data, "executor_id", None)
+            )
+            if not executor_id:
+                return []
+
+            call_key = (None, str(executor_id))
+            tool_calls[call_key] = tool_calls.get(call_key, 0) + 1
+            return [_InternalToolCallSignal(str(executor_id))]
+
+        # For tool_result/function_result, extract participant from result metadata
+        result_data = (
             event.get("data")
             if isinstance(event, dict)
             else getattr(event, "data", None)
         )
-        if data is None:
+        if result_data:
+            participant_name = (
+                result_data.get("executor_id")
+                if isinstance(result_data, dict)
+                else getattr(result_data, "executor_id", None)
+            )
+            if participant_name:
+                call_key = (None, participant_name)
+                tool_calls[call_key] = tool_calls.get(call_key, 0) + 1
+                return [_InternalToolCallSignal(participant_name)]
+
+        return []
+
+    @classmethod
+    def _background_task_descriptors_from_event(cls, event: Any) -> List[str]:
+        """
+        Return JSON descriptors for server-side background MCP tasks.
+
+        When a Magentic specialist starts a server-side background MCP task,
+        Agent Framework surfaces the descriptor inside executor_completed.data
+        (AgentExecutorResponse / AgentResponseUpdate with function_result contents),
+        not just in top-level tool_result events.
+        """
+        event_type = cls._event_type(event)
+        if event_type not in {"tool_result", "function_result", "executor_completed"}:
             return []
 
-        data_type = data.get("type") if isinstance(data, dict) else type(data).__name__
-        if data_type != "GroupChatRequestSentEvent":
+        candidates = []
+        if isinstance(event, dict):
+            candidates.extend(
+                value
+                for value in (
+                    event.get("data"),
+                    event.get("result"),
+                    event.get("content"),
+                    event.get("output"),
+                )
+                if value is not None
+            )
+        else:
+            candidates.extend(
+                value
+                for value in (
+                    getattr(event, "data", None),
+                    getattr(event, "result", None),
+                    getattr(event, "content", None),
+                    getattr(event, "output", None),
+                )
+                if value is not None
+            )
+
+        descriptors = []
+        for candidate in candidates or [event]:
+            descriptors.extend(cls._background_task_descriptors_from_value(candidate))
+        return list(dict.fromkeys(descriptors))
+
+    @classmethod
+    def _background_task_descriptors_from_value(cls, value: Any) -> List[str]:
+        """
+        Extract parseable running background-task descriptors from a nested payload.
+
+        In real Magentic worker responses, background-task JSON lives under
+        structured messages/contents/items paths. The function_result wrapper
+        itself usually has empty .text, so we must traverse the structured
+        response (AgentResponse/AgentResponseUpdate) to find the task_id.
+        """
+        if value is None:
             return []
 
-        participant_name = (
-            data.get("participant_name")
-            if isinstance(data, dict)
-            else getattr(data, "participant_name", None)
-        )
-        if not participant_name:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+
+        if isinstance(value, str):
+            parsed_values = cls._parse_json_candidates(value)
+            descriptors = []
+            for parsed in parsed_values:
+                descriptors.extend(cls._background_task_descriptors_from_value(parsed))
+            return descriptors
+
+        if isinstance(value, (list, tuple)):
+            descriptors = []
+            for item in value:
+                descriptors.extend(cls._background_task_descriptors_from_value(item))
+            return descriptors
+
+        if isinstance(value, dict):
+            descriptor = cls._background_task_descriptor_json(value)
+            if descriptor:
+                return [descriptor]
+
+            descriptors = []
+            # Traverse structured response paths that contain background task descriptors
+            for key in (
+                "data",
+                "result",
+                "content",
+                "output",
+                "text",
+                "message",
+                "messages",
+                "contents",
+                "items",
+                "function_result",
+                "tool_result",
+            ):
+                if key in value:
+                    descriptors.extend(
+                        cls._background_task_descriptors_from_value(value[key])
+                    )
+            return descriptors
+
+        # Try to extract from object attributes
+        if hasattr(value, "to_dict"):
+            try:
+                return cls._background_task_descriptors_from_value(value.to_dict())
+            except (TypeError, ValueError):
+                pass
+
+        # Check common attribute names on structured objects
+        for attr in ("text", "content", "contents", "messages", "items", "data"):
+            if hasattr(value, attr):
+                attr_value = getattr(value, attr, None)
+                if attr_value is not None:
+                    descriptors = cls._background_task_descriptors_from_value(
+                        attr_value
+                    )
+                    if descriptors:
+                        return descriptors
+
+        return []
+
+    @staticmethod
+    def _parse_json_candidates(value: str) -> List[Any]:
+        """
+        Parse a JSON value from a full string or from the widest JSON object within it.
+        """
+        value = value.strip()
+        if not value:
             return []
 
-        round_index = (
-            data.get("round_index")
-            if isinstance(data, dict)
-            else getattr(data, "round_index", None)
-        )
-        call_key = (round_index, participant_name)
-        tool_calls[call_key] = tool_calls.get(call_key, 0) + 1
-        return [_InternalToolCallSignal(participant_name)]
+        candidates = [value]
+        start = value.find("{")
+        end = value.rfind("}")
+        if start != -1 and end > start and value[start : end + 1] != value:
+            candidates.append(value[start : end + 1])
+
+        parsed_values = []
+        for candidate in candidates:
+            try:
+                parsed_values.append(json.loads(candidate))
+            except (TypeError, json.JSONDecodeError):
+                continue
+        return parsed_values
+
+    @staticmethod
+    def _background_task_descriptor_json(value: Dict[str, Any]) -> str:
+        """
+        Return a canonical JSON descriptor if the payload starts a background task.
+        """
+        task_id = value.get("task_id")
+        if not task_id:
+            return ""
+
+        status = str(value.get("status") or "running").strip().lower()
+        if status != "running":
+            return ""
+
+        descriptor = {
+            "task_id": task_id,
+            "status": status,
+            "tool_name": value.get("tool_name", "background_tool"),
+        }
+        return json.dumps(descriptor, default=str)
+
+    @staticmethod
+    def _background_task_ack(descriptors: List[str]) -> str:
+        """
+        Build a concise user-facing acknowledgement when no final text is available.
+        """
+        if not descriptors:
+            return ""
+
+        try:
+            descriptor = json.loads(descriptors[0])
+        except json.JSONDecodeError:
+            return "Background task started."
+
+        task_id = descriptor.get("task_id")
+        tool_name = descriptor.get("tool_name", "background_tool")
+        if task_id:
+            return f"Background tool `{tool_name}` started ({task_id})."
+        return f"Background tool `{tool_name}` started."
 
     async def _iter_result_events(
         self,
@@ -456,14 +759,6 @@ Guidelines:
             if callable(method):
                 return method(message_payload)
 
-        for attr_name in dir(runtime):
-            if attr_name.startswith("_"):
-                continue
-            if "run" in attr_name.lower() or "invoke" in attr_name.lower():
-                method = getattr(runtime, attr_name, None)
-                if callable(method):
-                    return method(message_payload)
-
         raise RuntimeError(
             "Unable to execute Magentic workflow with the installed builder."
         )
@@ -475,37 +770,25 @@ Guidelines:
     ) -> AsyncGenerator[Any, None]:
         """
         Run a Magentic workflow and yield its events.
+
+        Magentic uses messages[0] as the task to plan against, so we must pass
+        a single user message containing the latest request, not the full transcript.
         """
         if not orchestrator.manager_agent:
             raise RuntimeError("Magentic manager is not initialized.")
 
-        structured_messages = self._transcript_to_messages(transcript_messages)
-        if not structured_messages:
-            structured_messages = [
-                Message(role="user", contents=["Please introduce yourself."])
-            ]
+        # Build a single prompt from the full transcript for Magentic planning
+        # Magentic uses messages[0] as the task, so passing multi-message history
+        # would cause it to plan around the oldest message instead of latest request
+        if not transcript_messages:
+            task_message = Message(role="user", contents=["Please introduce yourself."])
+        else:
+            # Flatten transcript into single prompt that Magentic can plan against
+            prompt = orchestrator.build_prompt_from_transcript(transcript_messages)
+            task_message = Message(role="user", contents=[prompt])
 
-        try:
-            runtime = self._build_runtime(orchestrator, cache=True)
-            result = self._start_runtime(runtime, structured_messages)
-            async for event in self._iter_result_events(result):
-                yield event
-            return
-        except (TypeError, ValueError) as e:
-            if not (
-                len(structured_messages) > 1 and self._structured_history_unsupported(e)
-            ):
-                raise
-
-        runtime = self._build_runtime(orchestrator, cache=False)
-        fallback_message = Message(
-            role="user",
-            contents=[orchestrator.build_prompt_from_transcript(transcript_messages)],
-        )
-        result = self._start_runtime(
-            runtime,
-            [fallback_message],
-        )
+        runtime = self._build_runtime(orchestrator)
+        result = self._start_runtime(runtime, [task_message])
         async for event in self._iter_result_events(result):
             yield event
 
@@ -520,7 +803,8 @@ Guidelines:
         Stream Magentic notices and return the final assistant reply as an event.
         """
         streamed_text_parts = []
-        final_text_parts = []
+        final_text = ""
+        background_task_descriptors = []
         tool_calls = {}
         async for event in self._iter_workflow_events(
             orchestrator, transcript_messages
@@ -532,6 +816,14 @@ Guidelines:
                 ):
                     yield "notice", notice
 
+            event_type = self._event_type(event)
+
+            if event_type in ("tool_result", "function_result", "executor_completed"):
+                for descriptor in self._background_task_descriptors_from_event(event):
+                    background_task_descriptors.append(descriptor)
+                    yield "background_task", descriptor
+                continue
+
             if not self._is_terminal_output_event(event):
                 continue
 
@@ -540,17 +832,20 @@ Guidelines:
                 continue
 
             if self._is_final_result_event(event):
-                final_text_parts.append(event_text)
-                if not streamed_text_parts:
-                    yield "chunk", event_text
+                # Overwrite (don't accumulate) - last final event is authoritative
+                final_text = event_text
                 continue
 
             if event_text:
                 streamed_text_parts.append(event_text)
                 yield "chunk", event_text
 
-        final_text = "".join(final_text_parts) or "".join(streamed_text_parts)
-        yield "final", final_text
+        main_output = final_text or "".join(streamed_text_parts)
+        if not main_output:
+            main_output = self._background_task_ack(background_task_descriptors)
+        if main_output and not streamed_text_parts:
+            yield "chunk", main_output
+        yield "final", main_output
 
     async def _run_workflow(
         self,
@@ -613,8 +908,6 @@ Guidelines:
             agent_configs=agent_configs,
             participant_configs=active_participant_configs,
         )
-        orchestrator._cached_magentic_runtime = None
-        self._build_runtime(orchestrator, cache=True)
 
         status = self._build_status(orchestrator, failed_servers, failed_agents)
         LOG.info(status)
@@ -647,10 +940,13 @@ Guidelines:
                     yield value
                 elif kind == "final":
                     final_text = value
-            if not streamed and final_text:
-                yield final_text
-            elif not streamed and not final_text:
-                LOG.warning("No assistant text received from Magentic workflow")
+                elif kind == "background_task":
+                    continue
+            if final_text:
+                if not streamed:
+                    yield final_text
+            else:
+                LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)
@@ -672,9 +968,15 @@ Guidelines:
 
         try:
             streamed_response = False
+            background_task_descriptors = []
             if isolated_session:
+                # Load history for context (magentic doesn't have AgentSession to clone)
+                # Note: This loads committed history only. Concurrent in-flight requests
+                # are not visible until they commit via _persist_completed_turn.
+                history = orchestrator.session_manager.load_history()
+                history = self._conversation_history_messages(history)
                 transcript_messages = orchestrator._normalize_transcript_messages(
-                    [{"role": "user", "content": message}]
+                    [*history, {"role": "user", "content": message}]
                 )
                 aggregated_assistant_reply = ""
                 async for kind, value in self._stream_workflow_response(
@@ -689,41 +991,60 @@ Guidelines:
                         yield value
                     elif kind == "final":
                         aggregated_assistant_reply = value
+                    elif kind == "background_task":
+                        background_task_descriptors.append(value)
                 orchestrator._persist_isolated_response(
                     message,
                     aggregated_assistant_reply,
+                    background_task_descriptors=background_task_descriptors,
                 )
             else:
+                # Reserve turn ID and load history atomically
+                # Note: Concurrent requests may commit between history load and workflow
+                # completion, causing this workflow to run with slightly stale history.
+                # This is acceptable as turn-order commit below ensures database consistency.
                 async with orchestrator._session_lock:
+                    turn_id = orchestrator._next_turn_id
+                    orchestrator._next_turn_id += 1
                     history = orchestrator.session_manager.load_history()
-                    history = self._conversation_history_messages(history)
-                    transcript_messages = orchestrator._normalize_transcript_messages(
-                        [*history, {"role": "user", "content": message}]
-                    )
-                    aggregated_assistant_reply = ""
-                    async for kind, value in self._stream_workflow_response(
-                        orchestrator,
-                        transcript_messages,
-                        include_tool_notices=True,
-                    ):
-                        if kind == "notice":
-                            yield value
-                        elif kind == "chunk":
-                            streamed_response = True
-                            yield value
-                        elif kind == "final":
-                            aggregated_assistant_reply = value
-                    orchestrator._persist_completed_turn(
-                        {
-                            "message": message,
-                            "assistant_reply": aggregated_assistant_reply,
-                        }
-                    )
 
-            if not streamed_response and not aggregated_assistant_reply.strip():
-                LOG.warning("No assistant text received from Magentic workflow")
-            elif not streamed_response and aggregated_assistant_reply.strip():
-                yield aggregated_assistant_reply
+                # Filter and normalize (expensive operations outside lock)
+                history = self._conversation_history_messages(history)
+                transcript_messages = orchestrator._normalize_transcript_messages(
+                    [*history, {"role": "user", "content": message}]
+                )
+
+                aggregated_assistant_reply = ""
+                async for kind, value in self._stream_workflow_response(
+                    orchestrator,
+                    transcript_messages,
+                    include_tool_notices=True,
+                ):
+                    if kind == "notice":
+                        yield value
+                    elif kind == "chunk":
+                        streamed_response = True
+                        yield value
+                    elif kind == "final":
+                        aggregated_assistant_reply = value
+                    elif kind == "background_task":
+                        background_task_descriptors.append(value)
+
+                # Commit in turn order (handles concurrent requests properly)
+                await orchestrator._commit_completed_turn(
+                    turn_id,
+                    message,
+                    aggregated_assistant_reply,
+                    run_session=None,
+                    history_lengths={},
+                    background_task_descriptors=background_task_descriptors,
+                )
+
+            if aggregated_assistant_reply.strip():
+                if not streamed_response:
+                    yield aggregated_assistant_reply
+            else:
+                LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)

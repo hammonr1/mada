@@ -812,8 +812,10 @@ Guidelines:
         """
         if isolated_session:
             if self.planning_agent is None:
+                # Magentic mode doesn't use _create_run_session; it handles
+                # isolated sessions via history loading in process_message
                 raise RuntimeError(
-                    "Cannot create isolated session: planning_agent not initialized (magentic mode does not support isolated sessions)"
+                    "Isolated sessions not supported via _create_run_session in magentic mode"
                 )
             return None, self.planning_agent.create_session(), {}
 
@@ -851,6 +853,7 @@ Guidelines:
         self,
         message: str,
         assistant_reply: str,
+        background_task_descriptors: Optional[List[str]] = None,
     ) -> None:
         """
         Persist a response produced from an isolated agent session.
@@ -858,6 +861,9 @@ Guidelines:
         Args:
             message: User message for the isolated turn.
             assistant_reply: Aggregated assistant response text.
+            background_task_descriptors: Optional hidden MCP background task
+                descriptors that should start polling but not be stored as
+                assistant-visible text.
 
         Returns:
             None.
@@ -875,14 +881,19 @@ Guidelines:
         self.background_tasks.start_background_tool_poll_from_reply_if_needed(
             assistant_reply
         )
+        for descriptor in background_task_descriptors or []:
+            self.background_tasks.start_background_tool_poll_from_reply_if_needed(
+                descriptor
+            )
 
     async def _commit_completed_turn(
         self,
         turn_id: Optional[int],
         message: str,
         assistant_reply: str,
-        run_session: AgentSession,
+        run_session: Optional[AgentSession],
         history_lengths: Dict[str, int],
+        background_task_descriptors: Optional[List[str]] = None,
     ) -> None:
         """
         Queue and commit a completed shared-session turn in turn order.
@@ -893,6 +904,9 @@ Guidelines:
             assistant_reply: Aggregated assistant response text.
             run_session: Agent session used to process the turn.
             history_lengths: Provider message counts captured before streaming.
+            background_task_descriptors: Optional hidden MCP background task
+                descriptors that should start polling but not be stored as
+                assistant-visible text.
 
         Returns:
             None.
@@ -905,14 +919,18 @@ Guidelines:
             raise RuntimeError("Cannot commit an isolated turn to shared session.")
 
         async with self._session_lock:
-            if self.session is None:
-                raise RuntimeError("Orchestrator session not initialized.")
+            # Validate session for agent-as-tool mode
+            # In magentic mode: both run_session and self.session are None
+            # In agent-as-tool mode: both should be non-None
+            if run_session is not None and self.session is None:
+                raise RuntimeError("Orchestrator session not initialized")
 
             self._completed_turns[turn_id] = {
                 "message": message,
                 "assistant_reply": assistant_reply,
                 "run_session": run_session,
                 "history_lengths": history_lengths,
+                "background_task_descriptors": background_task_descriptors or [],
             }
 
             while self._next_turn_commit_id in self._completed_turns:
@@ -925,24 +943,25 @@ Guidelines:
 
     def _merge_completed_session(
         self,
-        completed_session: AgentSession,
+        completed_session: Optional[AgentSession],
         history_lengths: Dict[str, int],
     ) -> None:
         """
         Merge one completed run session into the shared orchestrator session.
 
         Args:
-            completed_session: Agent session used by the completed turn.
+            completed_session: Agent session used by the completed turn, or None
+                if the strategy doesn't use session merging (e.g., magentic mode).
             history_lengths: Provider message counts captured before streaming.
 
         Returns:
             None.
 
-        Raises:
-            RuntimeError: If the shared orchestrator session is not initialized.
         """
-        if self.session is None:
-            raise RuntimeError("Orchestrator session not initialized.")
+        # Skip merging if orchestrator session not initialized (magentic mode)
+        # or if no completed session provided
+        if self.session is None or completed_session is None:
+            return
 
         for provider_name, source_state in completed_session.state.items():
             if not isinstance(source_state, dict):
@@ -987,6 +1006,7 @@ Guidelines:
         """
         message = completed["message"]
         assistant_reply = completed["assistant_reply"]
+        background_task_descriptors = completed.get("background_task_descriptors", [])
 
         if not self.background_tasks.user_message_already_started_background_task(
             message
@@ -998,6 +1018,10 @@ Guidelines:
         self.background_tasks.start_background_tool_poll_from_reply_if_needed(
             assistant_reply
         )
+        for descriptor in background_task_descriptors:
+            self.background_tasks.start_background_tool_poll_from_reply_if_needed(
+                descriptor
+            )
 
     async def collect_message_response(
         self,
