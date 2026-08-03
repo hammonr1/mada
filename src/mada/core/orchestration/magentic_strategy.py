@@ -337,30 +337,6 @@ Guidelines:
         # Explicitly return False for untyped events - they are streamed deltas
         return False
 
-    @staticmethod
-    def _transcript_to_messages(
-        transcript_messages: List[Dict[str, Any]],
-    ) -> List[Message]:
-        """
-        Convert normalized transcript messages to Agent Framework messages.
-        """
-        messages = []
-        for message in transcript_messages:
-            content = str(message.get("content") or "").strip()
-            if not content:
-                continue
-            role = str(message.get("role") or "user").strip().lower() or "user"
-            messages.append(Message(role=role, contents=[content]))
-        return messages
-
-    @staticmethod
-    def _structured_history_unsupported(error: Exception) -> bool:
-        """
-        Return whether the installed Magentic runtime rejected multi-message input.
-        """
-        error_message = str(error).lower()
-        return "magentic only support" in error_message and "single" in error_message
-
     _BACKGROUND_TASK_STATUS_PATTERN = re.compile(
         r"^\[(?:task-|[^\]]+)\]\s*(?:Started|Running|Waiting)", re.IGNORECASE
     )
