@@ -3,13 +3,16 @@
 ## Unreleased
 
 ### Added
--
+- Magentic Orchestration Functionality
+- Safeguards for the orchestration switching and database consistency for async functionality
+- Test coverage for Magentic orchestration
 
 ### Changed
 -
 
 ### Fixed
--
+- Wrong task planning from multi-turn conversations
+- Tool call detection in nested Agent Framework event structures
 
 ## 0.2.0 - 2026-07-07
 
