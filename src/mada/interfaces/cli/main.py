@@ -291,11 +291,8 @@ class MADACLIInterface:
                         f"\nWARNING: {len(eg.exceptions)} initialization error(s) occurred. Continuing with available agents..."
                     )
                 except Exception as e:
-                    print(f"\nWARNING: Initialization error: {e}")
-                    print("Continuing with available agents...")
-                    import traceback
-
-                    traceback.print_exc()
+                    print(f"\nERROR: Initialization failed: {e}")
+                    return
 
                 print("\nChat with the agents (type 'quit' to exit)")
                 print("-" * 50)

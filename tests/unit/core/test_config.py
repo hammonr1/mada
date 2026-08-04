@@ -164,7 +164,6 @@ class TestRemoteA2AAgentConfig:
                 "optimizer": {
                     "url": "https://optimizer.example/a2a",
                     "card_url": "https://optimizer.example/.well-known/agent-card.json",
-                    "description": "Remote optimizer",
                     "timeout": 30,
                     "api_key": "secret",
                     "headers": {"x-trace": "enabled"},
@@ -176,7 +175,6 @@ class TestRemoteA2AAgentConfig:
             "optimizer": RemoteA2AAgentConfig(
                 url="https://optimizer.example/a2a",
                 card_url="https://optimizer.example/.well-known/agent-card.json",
-                description="Remote optimizer",
                 timeout=30,
                 api_key="secret",
                 headers={"x-trace": "enabled"},

@@ -269,14 +269,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         Build user-facing labels for remote A2A agents.
         """
         labels = []
-        for agent_name, agent_config in orchestrator.a2a_agents.items():
+        for agent_name in orchestrator.a2a_agents:
             card = orchestrator._a2a_agent_cards.get(agent_name, {})
-            description = (
-                card.get("description")
-                or agent_config.description
-                or f"Remote A2A agent at {agent_config.url}"
-            )
-            labels.append(f"A2A: {agent_name} - {description}")
+            labels.append(f"A2A: {agent_name} - {card['description']}")
         return labels
 
     async def initialize(

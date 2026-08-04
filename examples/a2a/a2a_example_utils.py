@@ -10,6 +10,18 @@ import os
 import re
 from pathlib import Path
 
+from a2a.server.agent_execution import AgentExecutor
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCard
+from a2a.utils.constants import PROTOCOL_VERSION_1_0, TransportProtocol
+from google.protobuf.json_format import ParseDict
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
 
 DEFAULT_CONFIG_PATH = (
     Path(__file__).parent.parent.parent / "configs" / "example_a2a_agents.json"
@@ -62,3 +74,40 @@ def load_model_settings(config_path: str | None) -> dict[str, str]:
         settings["api_key"] = Path(api_key).expanduser().read_text().strip()
 
     return settings
+
+
+def create_a2a_example_app(
+    agent_executor: AgentExecutor,
+    agent_card_path: Path,
+    public_url: str,
+) -> Starlette:
+    """
+    Build the common Starlette A2A app used by the example agents.
+    """
+
+    async def health(request: Request) -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    card = json.loads(agent_card_path.read_text(encoding="utf-8"))
+    card["supportedInterfaces"] = [
+        {
+            "url": public_url,
+            "protocolBinding": TransportProtocol.JSONRPC.value,
+            "protocolVersion": PROTOCOL_VERSION_1_0,
+        }
+    ]
+    public_agent_card = ParseDict(card, AgentCard())
+    request_handler = DefaultRequestHandler(
+        agent_executor=agent_executor,
+        task_store=InMemoryTaskStore(),
+        agent_card=public_agent_card,
+    )
+
+    return Starlette(
+        routes=[
+            Route("/health", health, methods=["GET"]),
+            *create_agent_card_routes(public_agent_card),
+            *create_jsonrpc_routes(request_handler, "/"),
+            *create_jsonrpc_routes(request_handler, "/a2a"),
+        ]
+    )

@@ -5,7 +5,7 @@
 Agent-to-Agent HTTP interface for MADA Orchestrator.
 
 This module exposes the configured MADA planning agent as an A2A-compatible
-JSON-RPC service. The MADA agent card is available under the standard
+service. The MADA agent card is available under the standard
 `/.well-known/agent-card.json` path.
 
 This is the server-side A2A entry point: use it when another A2A client or
@@ -17,42 +17,32 @@ through the `a2a.agents` configuration block.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import secrets
 import sys
-import time
-import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional
 
 import click
-
-try:
-    from fastapi import FastAPI, Header, HTTPException
-    from fastapi.responses import JSONResponse, StreamingResponse
-except (
-    ImportError
-) as exc:  # pragma: no cover - exercised only in missing dependency environments
-    FastAPI = None
-    Header = None
-    HTTPException = None
-    JSONResponse = None
-    StreamingResponse = None
-    FASTAPI_IMPORT_ERROR = exc
-else:
-    FASTAPI_IMPORT_ERROR = None
-
-try:
-    import uvicorn
-except (
-    ImportError
-) as exc:  # pragma: no cover - exercised only in missing dependency environments
-    uvicorn = None
-    UVICORN_IMPORT_ERROR = exc
-else:
-    UVICORN_IMPORT_ERROR = None
+import uvicorn
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.events import EventQueue
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.helpers import new_text_message
+from a2a.types import AgentCard
+from a2a.utils.constants import PROTOCOL_VERSION_1_0, TransportProtocol
+from google.protobuf.json_format import ParseDict
+from starlette.applications import Starlette
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from mada.core import load_config_from_json
 from mada.core.config import A2AConfig, AppConfig, OrchestrationConfig
@@ -61,11 +51,40 @@ if TYPE_CHECKING:
     from mada.core.orchestrator import MADAOrchestrator
 
 
-A2A_PROTOCOL_VERSION = "1.0.0"
-
-
 class A2AStartupError(RuntimeError):
     """Raised when the orchestrator cannot be initialized for A2A requests."""
+
+
+class A2AAuthMiddleware:
+    """
+    Validate API keys for state-changing A2A requests.
+    """
+
+    def __init__(self, app: Any, service: "MADAA2AService") -> None:
+        self.app = app
+        self.service = service
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if (
+            scope.get("type") == "http"
+            and scope.get("method", "").upper() != "GET"
+            and scope.get("path") in {"/", "/a2a"}
+        ):
+            headers = Headers(scope=scope)
+            try:
+                self.service.validate_api_key(
+                    headers.get("authorization"),
+                    headers.get("x-api-key"),
+                )
+            except HTTPException as exc:
+                response = JSONResponse(
+                    {"detail": exc.detail},
+                    status_code=exc.status_code,
+                )
+                await response(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
 
 
 def _format_startup_error_message(exc: BaseException) -> str:
@@ -83,30 +102,6 @@ def _format_startup_error_message(exc: BaseException) -> str:
         )
 
     return f"MADA failed to initialize the configured agent team. Details: {details}"
-
-
-def _require_fastapi() -> None:
-    """
-    Raise a clear error when A2A server dependencies are unavailable.
-    """
-    if FASTAPI_IMPORT_ERROR is not None or uvicorn is None:
-        missing = []
-        if FASTAPI_IMPORT_ERROR is not None:
-            missing.append("fastapi")
-        if UVICORN_IMPORT_ERROR is not None:
-            missing.append("uvicorn")
-        packages = ", ".join(missing) or "fastapi, uvicorn"
-        raise RuntimeError(
-            f"A2A mode requires {packages}. Install the project dependencies again."
-        )
-
-
-def _slugify(value: str) -> str:
-    """
-    Convert an agent name into a stable A2A skill identifier.
-    """
-    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip()).strip("-").lower()
-    return slug or "mada-agent"
 
 
 class MADAA2AService:
@@ -206,25 +201,33 @@ class MADAA2AService:
         """
         if self.a2a_config.card_path:
             card = self._load_agent_card_file()
-            card["url"] = self.public_url
-            card["protocolVersion"] = A2A_PROTOCOL_VERSION
+            card["supportedInterfaces"] = [
+                {
+                    "url": self.public_url,
+                    "protocolBinding": TransportProtocol.JSONRPC.value,
+                    "protocolVersion": PROTOCOL_VERSION_1_0,
+                }
+            ]
             card.setdefault("capabilities", {"streaming": True})
             card.setdefault("defaultInputModes", ["text/plain"])
             card.setdefault("defaultOutputModes", ["text/plain"])
-            card["supportsAuthenticatedExtendedCard"] = bool(self.api_key)
             return card
 
         return {
-            "protocolVersion": A2A_PROTOCOL_VERSION,
             "name": self.a2a_config.name,
             "description": self.a2a_config.description,
-            "url": self.public_url,
             "version": self.a2a_config.version,
+            "supportedInterfaces": [
+                {
+                    "url": self.public_url,
+                    "protocolBinding": TransportProtocol.JSONRPC.value,
+                    "protocolVersion": PROTOCOL_VERSION_1_0,
+                }
+            ],
             "capabilities": {"streaming": True},
             "defaultInputModes": ["text/plain"],
             "defaultOutputModes": ["text/plain"],
             "skills": self._build_skills(),
-            "supportsAuthenticatedExtendedCard": bool(self.api_key),
         }
 
     def _load_agent_card_file(self) -> Dict[str, Any]:
@@ -259,9 +262,13 @@ class MADAA2AService:
                 continue
             name = getattr(agent, "agent_name", "") or "MADA Agent"
             description = getattr(agent, "description", "") or name
+            skill_id = (
+                re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip()).strip("-").lower()
+                or "mada-agent"
+            )
             skills.append(
                 {
-                    "id": _slugify(name),
+                    "id": skill_id,
                     "name": name,
                     "description": description,
                     "tags": [getattr(agent, "domain", "") or "mada"],
@@ -305,33 +312,28 @@ class MADAA2AService:
             yield chunk
 
 
-def _json_rpc_error(
-    request_id: Any,
-    code: int,
-    message: str,
-    status_code: int = 200,
-) -> JSONResponse:
+def _extract_message_text(value: Any) -> str:
     """
-    Build a JSON-RPC error response with the requested HTTP status.
+    Extract text content from supported A2A message-like shapes.
     """
-    return JSONResponse(
-        {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "error": {"code": code, "message": message},
-        },
-        status_code=status_code,
-    )
+    if isinstance(value, str):
+        return value
 
+    get_user_input = getattr(value, "get_user_input", None)
+    if callable(get_user_input):
+        text = get_user_input()
+        return str(text or "")
 
-def _extract_message_text(params: Dict[str, Any]) -> str:
-    """
-    Extract text content from supported A2A message parameter shapes.
-    """
-    message = params.get("message", params)
+    if not isinstance(value, dict):
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            value = model_dump()
+        else:
+            return str(getattr(value, "text", "") or "")
+
+    message = value.get("message", value)
     if isinstance(message, str):
         return message
-
     if not isinstance(message, dict):
         return ""
 
@@ -351,59 +353,65 @@ def _extract_message_text(params: Dict[str, Any]) -> str:
     return "\n".join(text_parts)
 
 
-def _build_task(
-    task_id: str,
-    context_id: str,
-    text: str,
-    state: str = "completed",
-) -> Dict[str, Any]:
+async def _enqueue_event(event_queue: Any, event: Any) -> None:
     """
-    Build an A2A task object containing a text response artifact.
+    Enqueue an SDK event across minor EventQueue API differences.
     """
-    message_id = f"msg-{uuid.uuid4().hex}"
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    response_message = {
-        "kind": "message",
-        "messageId": message_id,
-        "role": "agent",
-        "parts": [{"kind": "text", "text": text}],
-        "taskId": task_id,
-        "contextId": context_id,
-    }
-    return {
-        "kind": "task",
-        "id": task_id,
-        "contextId": context_id,
-        "status": {
-            "state": state,
-            "timestamp": now,
-            "message": response_message,
-        },
-        "artifacts": [
-            {
-                "artifactId": f"artifact-{uuid.uuid4().hex}",
-                "name": "response",
-                "parts": [{"kind": "text", "text": text}],
-            }
-        ],
-    }
+    enqueue = getattr(event_queue, "enqueue_event", None)
+    if callable(enqueue):
+        result = enqueue(event)
+        if inspect.isawaitable(result):
+            await result
+        return
+
+    put = getattr(event_queue, "put", None)
+    if callable(put):
+        result = put(event)
+        if inspect.isawaitable(result):
+            await result
+        return
+
+    raise RuntimeError("Unsupported A2A event queue implementation")
 
 
-def _ids_from_params(params: Dict[str, Any]) -> tuple[str, str]:
+class MADAA2AExecutor(AgentExecutor):
     """
-    Resolve task and context IDs from request params or create new IDs.
+    A2A SDK executor adapter for the shared MADA orchestrator service.
     """
-    message = params.get("message")
-    task_id = params.get("id") or params.get("taskId")
-    context_id = params.get("contextId")
 
-    if isinstance(message, dict):
-        task_id = task_id or message.get("taskId")
-        context_id = context_id or message.get("contextId")
+    def __init__(self, service: MADAA2AService) -> None:
+        self.service = service
 
-    return str(task_id or f"task-{uuid.uuid4().hex}"), str(
-        context_id or f"context-{uuid.uuid4().hex}"
-    )
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """
+        Execute one A2A request through the MADA orchestrator.
+        """
+        try:
+            await self.service.ensure_started()
+        except A2AStartupError as exc:
+            configured_servers = (
+                ", ".join((self.service.config.mcp_servers or {}).keys()) or "none"
+            )
+            print(
+                "No MCP servers connected; returning A2A startup error. "
+                f"Configured MCP servers: {configured_servers}",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise RuntimeError(str(exc)) from exc
+
+        message_text = _extract_message_text(context).strip()
+        if not message_text:
+            raise ValueError("A2A request must include a text message part")
+
+        content = await self.service.collect_response(message_text)
+        await _enqueue_event(event_queue, new_text_message(content))
+
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """
+        Report that MADA does not support cancelling in-flight orchestrator work.
+        """
+        raise RuntimeError("A2A task cancellation is not supported")
 
 
 def create_a2a_app(
@@ -411,11 +419,10 @@ def create_a2a_app(
     public_url: str,
     api_key: Optional[str] = None,
     bearer_token: Optional[str] = None,
-) -> FastAPI:
+) -> Starlette:
     """
-    Build and return a FastAPI app backed by the configured MADA orchestrator.
+    Build and return an A2A SDK app backed by the configured MADA orchestrator.
     """
-    _require_fastapi()
     service = MADAA2AService(
         config=config,
         public_url=public_url,
@@ -424,7 +431,7 @@ def create_a2a_app(
     )
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: Starlette):
         """
         Attach the A2A service to app state and clean it up on shutdown.
         """
@@ -434,113 +441,34 @@ def create_a2a_app(
         finally:
             await service.shutdown()
 
-    app = FastAPI(title="MADA A2A API", lifespan=lifespan)
-
-    @app.get("/health")
-    async def health() -> Dict[str, str]:
+    async def health(request: Request) -> JSONResponse:
         """
         Report whether the A2A process is running and initialized.
         """
-        return {
-            "status": "ok",
-            "orchestrator_initialized": "true"
-            if service.orchestrator is not None
-            else "false",
-        }
-
-    async def get_agent_card() -> Dict[str, Any]:
-        """
-        Return the MADA A2A agent card for discovery endpoints.
-        """
-        return service.build_agent_card()
-
-    app.get("/.well-known/agent-card.json")(get_agent_card)
-    app.get("/.well-known/agent.json")(get_agent_card)
-    app.get("/agent-card.json")(get_agent_card)
-
-    async def handle_rpc(
-        body: Dict[str, Any],
-        authorization: Optional[str] = Header(default=None),
-        x_api_key: Optional[str] = Header(default=None),
-    ):
-        """
-        Handle A2A JSON-RPC message requests.
-        """
-        service.validate_api_key(authorization, x_api_key)
-
-        request_id = body.get("id")
-        method = body.get("method")
-        params = body.get("params") or {}
-        if not isinstance(params, dict):
-            return _json_rpc_error(request_id, -32602, "'params' must be an object")
-
-        if method not in {"message/send", "message/stream"}:
-            return _json_rpc_error(request_id, -32601, f"Unsupported method: {method}")
-
-        message_text = _extract_message_text(params).strip()
-        if not message_text:
-            return _json_rpc_error(
-                request_id,
-                -32602,
-                "A2A request must include a text message part",
-            )
-
-        try:
-            await service.ensure_started()
-        except A2AStartupError as exc:
-            configured_servers = (
-                ", ".join((service.config.mcp_servers or {}).keys()) or "none"
-            )
-            print(
-                "No MCP servers connected; returning 503 for A2A request. "
-                f"Configured MCP servers: {configured_servers}",
-                file=sys.stderr,
-                flush=True,
-            )
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-        task_id, context_id = _ids_from_params(params)
-
-        if method == "message/send":
-            content = await service.collect_response(message_text)
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": _build_task(task_id, context_id, content),
+        return JSONResponse(
+            {
+                "status": "ok",
+                "orchestrator_initialized": "true"
+                if service.orchestrator is not None
+                else "false",
             }
+        )
 
-        async def event_stream() -> AsyncGenerator[str, None]:
-            """
-            Yield server-sent events for streaming A2A responses.
-            """
-            collected = []
-            async for chunk in service.stream_response(message_text):
-                collected.append(chunk)
-                task = _build_task(
-                    task_id,
-                    context_id,
-                    "".join(collected),
-                    state="working",
-                )
-                payload = {"jsonrpc": "2.0", "id": request_id, "result": task}
-                yield f"data: {json.dumps(payload)}\n\n"
+    public_agent_card = ParseDict(service.build_agent_card(), AgentCard())
+    request_handler = DefaultRequestHandler(
+        agent_executor=MADAA2AExecutor(service),
+        task_store=InMemoryTaskStore(),
+        agent_card=public_agent_card,
+    )
 
-            final = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": _build_task(
-                    task_id,
-                    context_id,
-                    "".join(collected),
-                    state="completed",
-                ),
-            }
-            yield f"data: {json.dumps(final)}\n\n"
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-    app.post("/")(handle_rpc)
-    app.post("/a2a")(handle_rpc)
+    routes = [
+        Route("/health", health, methods=["GET"]),
+        *create_agent_card_routes(public_agent_card),
+        *create_jsonrpc_routes(request_handler, "/"),
+        *create_jsonrpc_routes(request_handler, "/a2a"),
+    ]
+    app = Starlette(routes=routes, lifespan=lifespan)
+    app.add_middleware(A2AAuthMiddleware, service=service)
 
     return app
 
@@ -554,9 +482,8 @@ def run_a2a(
     bearer_token: Optional[str] = None,
 ) -> None:
     """
-    Launch the A2A FastAPI server.
+    Launch the A2A server.
     """
-    _require_fastapi()
     card_url = public_url or f"http://{host}:{port}"
     app = create_a2a_app(
         config=config,

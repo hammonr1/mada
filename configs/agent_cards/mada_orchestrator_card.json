@@ -1,9 +1,14 @@
 {
-  "protocolVersion": "1.0.0",
   "name": "MADAOrchestrator",
   "description": "MADA multi-agent orchestrator that coordinates local reasoning agents and delegates to remote A2A agents when their capabilities match the task.",
-  "url": "http://localhost:9120",
   "version": "0.2.0",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:9120",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
   "capabilities": {
     "streaming": true
   },

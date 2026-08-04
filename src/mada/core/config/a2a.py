@@ -102,8 +102,6 @@ class RemoteA2AAgentConfig:
         card_url: Optional explicit URL for the remote A2A agent card. When
             omitted, MADA discovers the card from standard paths derived from
             `url`.
-        description: Optional fallback capability summary used only when the
-            remote agent card cannot be fetched.
         timeout: HTTP timeout in seconds for calls to this remote agent.
         api_key: Optional API key sent as `x-api-key`.
         headers: Optional additional HTTP headers.
@@ -111,7 +109,6 @@ class RemoteA2AAgentConfig:
 
     url: str
     card_url: str = ""
-    description: str = ""
     timeout: float = 180.0
     api_key: str = ""
     headers: dict[str, str] = field(default_factory=dict)
@@ -124,7 +121,6 @@ class RemoteA2AAgentConfig:
         if not self.url:
             raise ValueError("'a2a.agents.<name>.url' must not be empty")
 
-        self.description = expand_env_vars(self.description or "").strip()
         self.card_url = expand_env_vars(self.card_url or "").strip()
         self.api_key = expand_env_vars(self.api_key or "").strip()
 

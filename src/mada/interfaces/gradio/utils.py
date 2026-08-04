@@ -60,7 +60,7 @@ def create_agent_table(
         row = [
             agent_name,
             "a2a",
-            agent_config.description or f"Remote A2A agent at {agent_config.url}",
+            "",
             "a2a",
             "",
             f"A2A endpoint: {agent_config.url}",

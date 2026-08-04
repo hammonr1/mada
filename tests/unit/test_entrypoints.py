@@ -54,6 +54,7 @@ from mada.main import (
     _run_openai_api_from_args,
     main,
 )
+from a2a.utils.constants import PROTOCOL_VERSION_1_0, VERSION_HEADER
 
 try:
     from fastapi.testclient import TestClient
@@ -1001,10 +1002,12 @@ class TestMADAA2ACmd:
 
             assert response.status_code == 200
             payload = response.json()
-            assert payload["protocolVersion"] == "1.0.0"
             assert payload["name"] == "MADA Test"
             assert payload["description"] == "Test A2A agent"
-            assert payload["url"] == "https://mada.example/a2a"
+            assert payload["supportedInterfaces"][0]["url"] == (
+                "https://mada.example/a2a"
+            )
+            assert payload["supportedInterfaces"][0]["protocolVersion"] == "1.0"
             assert payload["capabilities"]["streaming"] is True
 
         def test_agent_card_endpoint_can_serve_card_file(
@@ -1017,11 +1020,16 @@ class TestMADAA2ACmd:
             card_path.write_text(
                 json.dumps(
                     {
-                        "protocolVersion": "1.0.0",
                         "name": "FileBackedMADA",
                         "description": "Loaded from a card file",
-                        "url": "http://placeholder",
                         "version": "1.0.0",
+                        "supportedInterfaces": [
+                            {
+                                "url": "http://placeholder",
+                                "protocolBinding": "JSONRPC",
+                                "protocolVersion": "1.0",
+                            }
+                        ],
                         "skills": [
                             {
                                 "id": "file-backed",
@@ -1042,15 +1050,16 @@ class TestMADAA2ACmd:
             )
             payload = service.build_agent_card()
 
-            assert payload["protocolVersion"] == "1.0.0"
             assert payload["name"] == "FileBackedMADA"
             assert payload["description"] == "Loaded from a card file"
-            assert payload["url"] == "https://mada.example/a2a"
-            assert payload["supportsAuthenticatedExtendedCard"] is False
+            assert payload["supportedInterfaces"][0]["url"] == (
+                "https://mada.example/a2a"
+            )
+            assert payload["supportedInterfaces"][0]["protocolVersion"] == "1.0"
 
         def test_message_send_returns_a2a_task(self, create_dummy_config: Callable):
             """
-            Test that JSON-RPC `message/send` returns a completed A2A task.
+            Test that JSON-RPC `SendMessage` returns a completed A2A task.
             """
             config = create_dummy_config()
 
@@ -1067,14 +1076,16 @@ class TestMADAA2ACmd:
                 with TestClient(app) as client:
                     response = client.post(
                         "/",
+                        headers={VERSION_HEADER: PROTOCOL_VERSION_1_0},
                         json={
                             "jsonrpc": "2.0",
                             "id": "req-1",
-                            "method": "message/send",
+                            "method": "SendMessage",
                             "params": {
                                 "message": {
-                                    "role": "user",
-                                    "parts": [{"kind": "text", "text": "hello"}],
+                                    "messageId": "msg-1",
+                                    "role": "ROLE_USER",
+                                    "parts": [{"text": "hello"}],
                                 }
                             },
                         },
@@ -1083,11 +1094,7 @@ class TestMADAA2ACmd:
             assert response.status_code == 200
             payload = response.json()
             assert payload["id"] == "req-1"
-            assert payload["result"]["status"]["state"] == "completed"
-            assert (
-                payload["result"]["status"]["message"]["parts"][0]["text"]
-                == "hello from mada"
-            )
+            assert payload["result"]["message"]["parts"][0]["text"] == "hello from mada"
 
 
 @pytest.mark.unit

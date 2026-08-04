@@ -6,25 +6,25 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import uuid
 from pathlib import Path
-from typing import Any
 
-from a2a_example_utils import DEFAULT_CONFIG_PATH, load_model_settings
-from fastapi import FastAPI, HTTPException
+from a2a_example_utils import (
+    DEFAULT_CONFIG_PATH,
+    create_a2a_example_app,
+    load_model_settings,
+)
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.events import EventQueue
+from a2a.helpers import new_text_message
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
 from google.genai import types
-from mada.interfaces.a2a.main import (
-    _build_task,
-    _extract_message_text,
-    _ids_from_params,
-)
+from starlette.applications import Starlette
 
 
 DEFAULT_MCP_URL = "http://localhost:9102/mcp"
@@ -92,9 +92,6 @@ class GoogleADKA2AAgent:
         return self.model
 
     async def run(self, task: str) -> str:
-        return await self._run_adk_agent(task)
-
-    async def _run_adk_agent(self, prompt: str) -> str:
         runner = self.runner
         user_id = f"mada-user-{uuid.uuid4().hex}"
         session_id = f"mada-session-{uuid.uuid4().hex}"
@@ -106,7 +103,7 @@ class GoogleADKA2AAgent:
 
         message = types.Content(
             role="user",
-            parts=[types.Part(text=prompt)],
+            parts=[types.Part(text=task)],
         )
 
         final_text = ""
@@ -127,59 +124,31 @@ class GoogleADKA2AAgent:
         return final_text
 
 
-def create_app(agent: GoogleADKA2AAgent, public_url: str) -> FastAPI:
-    app = FastAPI(title="Example Google ADK A2A Agent")
+class GoogleADKA2AExecutor(AgentExecutor):
+    """
+    A2A SDK executor that delegates requests to the Google ADK example agent.
+    """
 
-    @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def __init__(self, agent: GoogleADKA2AAgent) -> None:
+        self.agent = agent
 
-    @app.get("/.well-known/agent-card.json")
-    async def agent_card() -> dict[str, Any]:
-        card = json.loads(DEFAULT_AGENT_CARD_PATH.read_text(encoding="utf-8"))
-        card["url"] = public_url
-        return card
-
-    @app.post("/")
-    @app.post("/a2a")
-    async def handle_rpc(body: dict[str, Any]):
-        request_id = body.get("id")
-        if body.get("method") != "message/send":
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32601, "message": "Only message/send is supported"},
-            }
-
-        params = body.get("params") or {}
-        if not isinstance(params, dict):
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32602, "message": "'params' must be an object"},
-            }
-
-        task = _extract_message_text(params).strip()
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        task = context.get_user_input().strip()
         if not task:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32602, "message": "Missing text message"},
-            }
+            raise ValueError("A2A request must include a text message part")
+        text = await self.agent.run(task)
+        await event_queue.enqueue_event(new_text_message(text))
 
-        try:
-            text = await agent.run(task)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        raise RuntimeError("A2A task cancellation is not supported")
 
-        task_id, context_id = _ids_from_params(params)
-        return {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": _build_task(task_id, context_id, text),
-        }
 
-    return app
+def create_app(agent: GoogleADKA2AAgent, public_url: str) -> Starlette:
+    return create_a2a_example_app(
+        GoogleADKA2AExecutor(agent),
+        DEFAULT_AGENT_CARD_PATH,
+        public_url,
+    )
 
 
 def main() -> None:

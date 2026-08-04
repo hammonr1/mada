@@ -245,7 +245,8 @@ handles outbound calls from MADA to remote A2A agents, while
 
 Use `a2a.agents` when the MADA orchestrator should delegate work to other A2A
 agents. Each configured remote agent is exposed to the planning agent as a tool,
-using the remote agent card for routing context when available.
+using the remote agent card for routing context. MADA fails startup if a
+configured remote A2A agent card cannot be fetched.
 
 #### Fields
 
@@ -253,7 +254,6 @@ using the remote agent card for routing context when available.
 | ------------- | --------------------------------------------------------------------------- | --------- | ------- |
 | `url`         | JSON-RPC endpoint for the remote A2A agent.                                  | Yes       | N/A     |
 | `card_url`    | Explicit URL for the remote agent card. If omitted, MADA tries standard A2A card paths derived from `url`. | No | None |
-| `description` | Fallback description used only if the remote agent card cannot be fetched.   | No        | None    |
 | `timeout`     | HTTP timeout in seconds for calls to the remote agent.                       | No        | `180`   |
 | `api_key`     | Optional API key sent as `x-api-key`.                                        | No        | None    |
 | `headers`     | Additional HTTP headers to send to the remote agent.                         | No        | `{}`    |
@@ -275,9 +275,11 @@ using the remote agent card for routing context when available.
 }
 ```
 
-The example A2A agents read the same MADA config by default so they use the
-same `model` block as the orchestrator. Install their optional dependencies and
-launch them with the config path:
+The example MCP servers are used inside the remote A2A agents, not as local
+MADA MCP servers. The MADA orchestrator should report `0 MCP Servers` and `2
+remote A2A agents` for this config. The remote agent card endpoints must be
+reachable so MADA can discover each remote agent's skills. Install optional
+dependencies and launch the MCP servers and A2A agents with the config path:
 
 ```bash
 pip install -e ".[a2a-examples]"

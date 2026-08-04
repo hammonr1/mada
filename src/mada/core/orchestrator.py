@@ -612,9 +612,10 @@ Guidelines:
                 client = RemoteA2AClient(agent_name, agent_config)
                 self._a2a_clients_by_agent[agent_name] = client
 
-            description = (
-                agent_config.description
-                or f"Remote A2A agent available at {agent_config.url}"
+            card = self._a2a_agent_cards.get(agent_name, {})
+            description = self._remote_a2a_description(
+                card["description"],
+                card,
             )
             tool_name = f"call_{self._tool_name(agent_name)}"
             tools.append(
@@ -694,30 +695,37 @@ Guidelines:
         lines = []
         for agent_name, agent_config in self.a2a_agents.items():
             card = self._a2a_agent_cards.get(agent_name, {})
-            description = (
-                agent_config.description
-                or card.get("description")
-                or f"Remote A2A agent at {agent_config.url}"
+            description = self._remote_a2a_description(
+                card["description"],
+                card,
             )
-            skills = card.get("skills")
-            if isinstance(skills, list) and skills:
-                skill_lines = []
-                for skill in skills:
-                    if not isinstance(skill, dict):
-                        continue
-                    skill_name = skill.get("name") or skill.get("id") or "skill"
-                    skill_description = skill.get("description") or ""
-                    skill_lines.append(f"{skill_name}: {skill_description}".strip())
-                if skill_lines:
-                    description = f"{description} Skills: {'; '.join(skill_lines)}"
             lines.append(f"    {agent_name}: {description}")
         if not lines:
             return "    (no remote A2A agents configured)"
         return "\n".join(lines)
 
+    def _remote_a2a_description(self, description: str, card: dict[str, Any]) -> str:
+        """
+        Add agent-card skill summaries to a remote A2A description.
+        """
+        skills = card.get("skills")
+        if not isinstance(skills, list) or not skills:
+            return description
+
+        skill_lines = []
+        for skill in skills:
+            if not isinstance(skill, dict):
+                continue
+            skill_name = skill.get("name") or skill.get("id") or "skill"
+            skill_description = skill.get("description") or ""
+            skill_lines.append(f"{skill_name}: {skill_description}".strip())
+        if not skill_lines:
+            return description
+        return f"{description} Skills: {'; '.join(skill_lines)}"
+
     async def _load_remote_a2a_agent_cards(self) -> None:
         """
-        Best-effort fetch of remote A2A agent cards for planner routing context.
+        Fetch remote A2A agent cards for planner routing context.
         """
         self._a2a_agent_cards.clear()
         for agent_name, agent_config in self.a2a_agents.items():
@@ -728,10 +736,15 @@ Guidelines:
             try:
                 card = await client.get_agent_card()
             except Exception as exc:
-                LOG.debug(f"Could not fetch A2A agent card for {agent_name}: {exc}")
-                continue
-            if card:
-                self._a2a_agent_cards[agent_name] = card
+                raise RuntimeError(
+                    f"Could not fetch A2A agent card for {agent_name}: {exc}"
+                ) from exc
+            if not card:
+                raise RuntimeError(
+                    f"Could not fetch A2A agent card for {agent_name}: "
+                    f"{agent_config.card_url or agent_config.url}"
+                )
+            self._a2a_agent_cards[agent_name] = card
 
     async def initialize_orchestrator(
         self,
