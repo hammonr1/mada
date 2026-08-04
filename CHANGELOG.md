@@ -12,7 +12,8 @@
 
 ### Fixed
 - Wrong task planning from multi-turn conversations
-- Tool call detection in nested Agent Framework event structures
+- Tool call detection in nested Agent Framework event structures (including typed records)
+- Incomplete streaming when final result differs from accumulated chunks
 
 ## 0.2.0 - 2026-07-07
 

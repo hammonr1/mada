@@ -410,11 +410,19 @@ Guidelines:
                     contents = data.get("contents")
                     if isinstance(contents, (list, tuple)):
                         for item in contents:
-                            if isinstance(item, dict) and any(
-                                key in item for key in ("function_call", "tool_call")
-                            ):
-                                has_function_call = True
-                                break
+                            if isinstance(item, dict):
+                                # Check for typed tool call records like {"type": "function_call", ...}
+                                item_type = str(item.get("type", "")).lower()
+                                if item_type in ("function_call", "tool_call"):
+                                    has_function_call = True
+                                    break
+                                # Also check for direct function_call/tool_call keys
+                                if any(
+                                    key in item
+                                    for key in ("function_call", "tool_call")
+                                ):
+                                    has_function_call = True
+                                    break
                 executor_id = data.get("executor_id") or data.get("agent_id")
             else:
                 # Check top-level attributes
@@ -432,16 +440,30 @@ Guidelines:
                     contents = getattr(data, "contents", None)
                     if isinstance(contents, (list, tuple)):
                         for item in contents:
+                            # Check object attributes
                             if hasattr(item, "function_call") or hasattr(
                                 item, "tool_call"
                             ):
                                 has_function_call = True
                                 break
-                            if isinstance(item, dict) and any(
-                                key in item for key in ("function_call", "tool_call")
-                            ):
-                                has_function_call = True
-                                break
+                            # Check typed records or dict entries
+                            if isinstance(item, dict):
+                                item_type = str(item.get("type", "")).lower()
+                                if item_type in ("function_call", "tool_call"):
+                                    has_function_call = True
+                                    break
+                                if any(
+                                    key in item
+                                    for key in ("function_call", "tool_call")
+                                ):
+                                    has_function_call = True
+                                    break
+                            # Check for typed object with .type attribute
+                            if hasattr(item, "type"):
+                                item_type = str(getattr(item, "type", "")).lower()
+                                if item_type in ("function_call", "tool_call"):
+                                    has_function_call = True
+                                    break
                 executor_id = getattr(data, "executor_id", None) or getattr(
                     data, "agent_id", None
                 )
@@ -676,6 +698,8 @@ Guidelines:
     def _background_task_ack(descriptors: List[str]) -> str:
         """
         Build a concise user-facing acknowledgement when no final text is available.
+
+        Format matches _BACKGROUND_TASK_STATUS_PATTERN so history filtering removes it.
         """
         if not descriptors:
             return ""
@@ -683,13 +707,13 @@ Guidelines:
         try:
             descriptor = json.loads(descriptors[0])
         except json.JSONDecodeError:
-            return "Background task started."
+            return "[background-task] Started"
 
         task_id = descriptor.get("task_id")
         tool_name = descriptor.get("tool_name", "background_tool")
         if task_id:
-            return f"Background tool `{tool_name}` started ({task_id})."
-        return f"Background tool `{tool_name}` started."
+            return f"[{task_id}] Started background tool `{tool_name}`"
+        return f"[background-task] Started tool `{tool_name}`"
 
     async def _iter_result_events(
         self,
@@ -819,7 +843,10 @@ Guidelines:
         main_output = final_text or "".join(streamed_text_parts)
         if not main_output:
             main_output = self._background_task_ack(background_task_descriptors)
-        if main_output and not streamed_text_parts:
+
+        # Stream the final/fallback text if it differs from what was already streamed
+        streamed_text = "".join(streamed_text_parts)
+        if main_output and main_output != streamed_text:
             yield "chunk", main_output
         yield "final", main_output
 
