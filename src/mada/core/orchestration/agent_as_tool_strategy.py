@@ -399,6 +399,7 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
 
         aggregated_assistant_reply = ""
         tool_calls = []
+        background_task_descriptors = []
         response_started = False
 
         try:
@@ -426,7 +427,9 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
 
             if isolated_session:
                 orchestrator._persist_isolated_response(
-                    message, aggregated_assistant_reply
+                    message,
+                    aggregated_assistant_reply,
+                    background_task_descriptors=background_task_descriptors,
                 )
                 return
 
@@ -436,6 +439,7 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                 aggregated_assistant_reply,
                 run_session,
                 history_lengths,
+                background_task_descriptors=background_task_descriptors,
             )
         except Exception as e:
             yield orchestrator._process_message_error(e)

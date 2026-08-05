@@ -811,12 +811,6 @@ Guidelines:
             RuntimeError: If the shared orchestrator session is not initialized.
         """
         if isolated_session:
-            if self.planning_agent is None:
-                # Magentic mode doesn't use _create_run_session; it handles
-                # isolated sessions via history loading in process_message
-                raise RuntimeError(
-                    "Isolated sessions not supported via _create_run_session in magentic mode"
-                )
             return None, self.planning_agent.create_session(), {}
 
         async with self._session_lock:

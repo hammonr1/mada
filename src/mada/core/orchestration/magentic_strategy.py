@@ -188,6 +188,25 @@ Guidelines:
         "data",
     )
 
+    _TOOL_CALL_KEYS = (
+        "function_call",
+        "tool_call",
+        "function_calls",
+        "tool_calls",
+    )
+
+    _TOOL_COLLECTION_KEYS = ("tool_calls", "tools", "function_calls", "functions")
+
+    _FINAL_EVENT_TYPES = frozenset(
+        {"final", "final_output", "final_response", "result"}
+    )
+
+    @staticmethod
+    def _payload_value(payload: Any, key: str) -> Any:
+        if isinstance(payload, dict):
+            return payload.get(key)
+        return getattr(payload, key, None)
+
     def _extract_text(self, payload: Any) -> str:
         """
         Best-effort extraction of a final assistant reply from Magentic results.
@@ -201,28 +220,16 @@ Guidelines:
                 text for item in payload if (text := self._extract_text(item))
             )
 
-        # Get event type (works for dict or object)
-        event_type = ""
-        if isinstance(payload, dict):
-            event_type = str(payload.get("type") or payload.get("event") or "").lower()
-        else:
-            event_type = str(
-                getattr(payload, "type", "") or getattr(payload, "event", "")
-            ).lower()
-
-        if event_type in self._IGNORED_EVENT_TYPES:
-            return ""
-
-        if event_type in ("tool_result", "function_result"):
+        event_type = self._event_type(payload)
+        if event_type in self._IGNORED_EVENT_TYPES or event_type in (
+            "tool_result",
+            "function_result",
+        ):
             return ""
 
         # Extract text from known keys/attributes
         for key in self._TEXT_KEYS:
-            value = (
-                payload.get(key)
-                if isinstance(payload, dict)
-                else getattr(payload, key, None)
-            )
+            value = self._payload_value(payload, key)
             if isinstance(value, str) and value.strip():
                 return value
             if value is not None:
@@ -230,30 +237,7 @@ Guidelines:
                 if text.strip():
                     return text
 
-        # Check if this is a tool-call-only update (no user-visible text)
-        # AgentResponseUpdate with function_call/tool_call but no text should return empty
-        if isinstance(payload, dict):
-            has_function_call = any(
-                key in payload
-                for key in (
-                    "function_call",
-                    "tool_call",
-                    "function_calls",
-                    "tool_calls",
-                )
-            )
-        else:
-            has_function_call = any(
-                hasattr(payload, key)
-                for key in (
-                    "function_call",
-                    "tool_call",
-                    "function_calls",
-                    "tool_calls",
-                )
-            )
-
-        if has_function_call:
+        if self._contains_tool_call(payload):
             # This is a tool invocation, not user-facing text
             return ""
 
@@ -324,19 +308,6 @@ Guidelines:
 
         return False
 
-    def _is_final_result_event(self, event: Any) -> bool:
-        """
-        Return whether an event is an aggregate final result rather than a delta.
-
-        Untyped streamed Message/dict chunks should be treated as deltas, not finals,
-        to avoid overwriting accumulated text and losing earlier chunks.
-        """
-        event_type = self._event_type(event)
-        if event_type in {"final", "final_output", "final_response", "result"}:
-            return True
-        # Explicitly return False for untyped events - they are streamed deltas
-        return False
-
     _BACKGROUND_TASK_STATUS_PATTERN = re.compile(
         r"^\[(?:task-|[^\]]+)\]\s*(?:Started|Running|Waiting)", re.IGNORECASE
     )
@@ -361,10 +332,40 @@ Guidelines:
                 messages.append(message)
         return messages
 
+    @classmethod
+    def _contains_tool_call(cls, payload: Any) -> bool:
+        """
+        Return whether payload or its contents describe a tool/function call.
+        """
+        event_type = cls._event_type(payload)
+        if event_type in ("function_call", "tool_call"):
+            return True
+
+        if any(
+            cls._payload_value(payload, key) is not None for key in cls._TOOL_CALL_KEYS
+        ):
+            return True
+
+        contents = cls._payload_value(payload, "contents")
+        if isinstance(contents, (list, tuple)):
+            return any(cls._contains_tool_call(item) for item in contents)
+
+        return False
+
     @staticmethod
+    def _tool_call_signals(
+        participant_name: Any,
+    ) -> List[str]:
+        if not participant_name:
+            return []
+
+        return [_InternalToolCallSignal(str(participant_name))]
+
+    @classmethod
     def _call_notices_from_event(
+        cls,
         event: Any,
-        tool_calls: Dict[Tuple[Any, str], int],
+        seen_executor_ids: set,
     ) -> List[str]:
         """
         Return invisible handoff signals when real MCP tool calls occur.
@@ -373,164 +374,43 @@ Guidelines:
         a real tool execution. Actual Magentic tool invocations are surfaced as
         streamed output events carrying AgentResponseUpdate with function_call,
         not just executor_invoked events.
+
+        Uses seen_executor_ids to deduplicate signals from the same tool execution
+        (executor_invoked + output + tool_result all carry the same executor_id).
         """
-        event_type = str(
-            event.get("type") if isinstance(event, dict) else getattr(event, "type", "")
-        ).lower()
+        event_type = cls._event_type(event)
 
-        # Check output events for function calls in their data
         if event_type == "output":
-            data = (
-                event.get("data")
-                if isinstance(event, dict)
-                else getattr(event, "data", None)
+            data = cls._payload_value(event, "data")
+            executor_id = cls._payload_value(data, "executor_id") or cls._payload_value(
+                data, "agent_id"
             )
-            if data is None:
-                return []
+            if (
+                executor_id
+                and executor_id not in seen_executor_ids
+                and cls._contains_tool_call(data)
+            ):
+                seen_executor_ids.add(executor_id)
+                return cls._tool_call_signals(executor_id)
+            return []
 
-            # Check if this output contains a function_call (AgentResponseUpdate)
-            # In real Agent Framework streams, tool invocations are carried inside
-            # AgentResponseUpdate.contents, not as top-level attributes
-            has_function_call = False
-            executor_id = None
-
-            if isinstance(data, dict):
-                # Check top-level attributes
-                has_function_call = any(
-                    key in data
-                    for key in (
-                        "function_call",
-                        "tool_call",
-                        "function_calls",
-                        "tool_calls",
-                    )
-                )
-                # Also check contents field for nested tool calls
-                if not has_function_call and "contents" in data:
-                    contents = data.get("contents")
-                    if isinstance(contents, (list, tuple)):
-                        for item in contents:
-                            if isinstance(item, dict):
-                                # Check for typed tool call records like {"type": "function_call", ...}
-                                item_type = str(item.get("type", "")).lower()
-                                if item_type in ("function_call", "tool_call"):
-                                    has_function_call = True
-                                    break
-                                # Also check for direct function_call/tool_call keys
-                                if any(
-                                    key in item
-                                    for key in ("function_call", "tool_call")
-                                ):
-                                    has_function_call = True
-                                    break
-                executor_id = data.get("executor_id") or data.get("agent_id")
-            else:
-                # Check top-level attributes
-                has_function_call = any(
-                    hasattr(data, key)
-                    for key in (
-                        "function_call",
-                        "tool_call",
-                        "function_calls",
-                        "tool_calls",
-                    )
-                )
-                # Also check contents attribute for nested tool calls
-                if not has_function_call and hasattr(data, "contents"):
-                    contents = getattr(data, "contents", None)
-                    if isinstance(contents, (list, tuple)):
-                        for item in contents:
-                            # Check object attributes
-                            if hasattr(item, "function_call") or hasattr(
-                                item, "tool_call"
-                            ):
-                                has_function_call = True
-                                break
-                            # Check typed records or dict entries
-                            if isinstance(item, dict):
-                                item_type = str(item.get("type", "")).lower()
-                                if item_type in ("function_call", "tool_call"):
-                                    has_function_call = True
-                                    break
-                                if any(
-                                    key in item
-                                    for key in ("function_call", "tool_call")
-                                ):
-                                    has_function_call = True
-                                    break
-                            # Check for typed object with .type attribute
-                            if hasattr(item, "type"):
-                                item_type = str(getattr(item, "type", "")).lower()
-                                if item_type in ("function_call", "tool_call"):
-                                    has_function_call = True
-                                    break
-                executor_id = getattr(data, "executor_id", None) or getattr(
-                    data, "agent_id", None
-                )
-
-            if has_function_call and executor_id:
-                call_key = (None, executor_id)
-                tool_calls[call_key] = tool_calls.get(call_key, 0) + 1
-                return [_InternalToolCallSignal(str(executor_id))]
-
-        # Also check executor_invoked, tool_result, function_result
         if event_type not in {"executor_invoked", "tool_result", "function_result"}:
             return []
 
-        # For executor_invoked, extract the participant name
+        data = cls._payload_value(event, "data")
+        executor_id = cls._payload_value(data, "executor_id")
+
         if event_type == "executor_invoked":
-            data = (
-                event.get("data")
-                if isinstance(event, dict)
-                else getattr(event, "data", None)
+            has_tools = any(
+                cls._payload_value(data, key) is not None
+                for key in cls._TOOL_COLLECTION_KEYS
             )
-            if data is None:
+            if not has_tools or not executor_id:
                 return []
 
-            # Check if this executor has actual tool calls (not just model-only)
-            # Look for tool invocations in the data
-            has_tools = False
-            if isinstance(data, dict):
-                # Check for tool-related fields that indicate MCP tool usage
-                has_tools = any(
-                    key in data
-                    for key in ("tool_calls", "tools", "function_calls", "functions")
-                )
-            elif hasattr(data, "tool_calls") or hasattr(data, "tools"):
-                has_tools = True
-
-            if not has_tools:
-                return []
-
-            executor_id = (
-                data.get("executor_id")
-                if isinstance(data, dict)
-                else getattr(data, "executor_id", None)
-            )
-            if not executor_id:
-                return []
-
-            call_key = (None, str(executor_id))
-            tool_calls[call_key] = tool_calls.get(call_key, 0) + 1
-            return [_InternalToolCallSignal(str(executor_id))]
-
-        # For tool_result/function_result, extract participant from result metadata
-        result_data = (
-            event.get("data")
-            if isinstance(event, dict)
-            else getattr(event, "data", None)
-        )
-        if result_data:
-            participant_name = (
-                result_data.get("executor_id")
-                if isinstance(result_data, dict)
-                else getattr(result_data, "executor_id", None)
-            )
-            if participant_name:
-                call_key = (None, participant_name)
-                tool_calls[call_key] = tool_calls.get(call_key, 0) + 1
-                return [_InternalToolCallSignal(participant_name)]
-
+        if executor_id and executor_id not in seen_executor_ids:
+            seen_executor_ids.add(executor_id)
+            return cls._tool_call_signals(executor_id)
         return []
 
     @classmethod
@@ -547,29 +427,11 @@ Guidelines:
         if event_type not in {"tool_result", "function_result", "executor_completed"}:
             return []
 
-        candidates = []
-        if isinstance(event, dict):
-            candidates.extend(
-                value
-                for value in (
-                    event.get("data"),
-                    event.get("result"),
-                    event.get("content"),
-                    event.get("output"),
-                )
-                if value is not None
-            )
-        else:
-            candidates.extend(
-                value
-                for value in (
-                    getattr(event, "data", None),
-                    getattr(event, "result", None),
-                    getattr(event, "content", None),
-                    getattr(event, "output", None),
-                )
-                if value is not None
-            )
+        candidates = [
+            value
+            for key in ("data", "result", "content", "output")
+            if (value := cls._payload_value(event, key)) is not None
+        ]
 
         descriptors = []
         for candidate in candidates or [event]:
@@ -660,19 +522,22 @@ Guidelines:
         if not value:
             return []
 
-        candidates = [value]
+        # Try full string first
+        try:
+            return [json.loads(value)]
+        except json.JSONDecodeError:
+            pass
+
+        # Try extracting widest {...} substring
         start = value.find("{")
         end = value.rfind("}")
-        if start != -1 and end > start and value[start : end + 1] != value:
-            candidates.append(value[start : end + 1])
-
-        parsed_values = []
-        for candidate in candidates:
+        if start != -1 and end > start:
             try:
-                parsed_values.append(json.loads(candidate))
-            except (TypeError, json.JSONDecodeError):
-                continue
-        return parsed_values
+                return [json.loads(value[start : end + 1])]
+            except json.JSONDecodeError:
+                pass
+
+        return []
 
     @staticmethod
     def _background_task_descriptor_json(value: Dict[str, Any]) -> str:
@@ -805,15 +670,12 @@ Guidelines:
         streamed_text_parts = []
         final_text = ""
         background_task_descriptors = []
-        tool_calls = {}
+        seen_executor_ids = set()
         async for event in self._iter_workflow_events(
             orchestrator, transcript_messages
         ):
             if include_tool_notices:
-                for notice in self._call_notices_from_event(
-                    event,
-                    tool_calls,
-                ):
+                for notice in self._call_notices_from_event(event, seen_executor_ids):
                     yield "notice", notice
 
             event_type = self._event_type(event)
@@ -831,14 +693,13 @@ Guidelines:
             if not event_text:
                 continue
 
-            if self._is_final_result_event(event):
+            if event_type in self._FINAL_EVENT_TYPES:
                 # Overwrite (don't accumulate) - last final event is authoritative
                 final_text = event_text
                 continue
 
-            if event_text:
-                streamed_text_parts.append(event_text)
-                yield "chunk", event_text
+            streamed_text_parts.append(event_text)
+            yield "chunk", event_text
 
         main_output = final_text or "".join(streamed_text_parts)
         if not main_output:
@@ -849,24 +710,6 @@ Guidelines:
         if main_output and main_output != streamed_text:
             yield "chunk", main_output
         yield "final", main_output
-
-    async def _run_workflow(
-        self,
-        orchestrator: "MADAOrchestrator",
-        transcript_messages: List[Dict[str, Any]],
-    ) -> str:
-        """
-        Run a fresh Magentic workflow from a rebuilt transcript.
-        """
-        final_text = ""
-        async for kind, value in self._stream_workflow_response(
-            orchestrator,
-            transcript_messages,
-            include_tool_notices=False,
-        ):
-            if kind == "final":
-                final_text = value
-        return final_text
 
     async def initialize(
         self,
@@ -945,10 +788,9 @@ Guidelines:
                     final_text = value
                 elif kind == "background_task":
                     continue
-            if final_text:
-                if not streamed:
-                    yield final_text
-            else:
+            if final_text and not streamed:
+                yield final_text
+            elif not final_text:
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
             error_msg = f"Error processing message: {e}"
@@ -972,68 +814,46 @@ Guidelines:
         try:
             streamed_response = False
             background_task_descriptors = []
+            turn_id = None
+
+            # Load history inside lock for non-isolated sessions to ensure atomicity
+            # between turn_id reservation and history snapshot
             if isolated_session:
-                # Load history for context (magentic doesn't have AgentSession to clone)
-                # Note: This loads committed history only. Concurrent in-flight requests
-                # are not visible until they commit via _persist_completed_turn.
                 history = orchestrator.session_manager.load_history()
-                history = self._conversation_history_messages(history)
-                transcript_messages = orchestrator._normalize_transcript_messages(
-                    [*history, {"role": "user", "content": message}]
-                )
-                aggregated_assistant_reply = ""
-                async for kind, value in self._stream_workflow_response(
-                    orchestrator,
-                    transcript_messages,
-                    include_tool_notices=True,
-                ):
-                    if kind == "notice":
-                        yield value
-                    elif kind == "chunk":
-                        streamed_response = True
-                        yield value
-                    elif kind == "final":
-                        aggregated_assistant_reply = value
-                    elif kind == "background_task":
-                        background_task_descriptors.append(value)
+            else:
+                async with orchestrator._session_lock:
+                    turn_id = orchestrator._next_turn_id
+                    orchestrator._next_turn_id += 1
+                    history = orchestrator.session_manager.load_history()
+
+            history = self._conversation_history_messages(history)
+            transcript_messages = orchestrator._normalize_transcript_messages(
+                [*history, {"role": "user", "content": message}]
+            )
+
+            aggregated_assistant_reply = ""
+            async for kind, value in self._stream_workflow_response(
+                orchestrator,
+                transcript_messages,
+                include_tool_notices=True,
+            ):
+                if kind == "notice":
+                    yield value
+                elif kind == "chunk":
+                    streamed_response = True
+                    yield value
+                elif kind == "final":
+                    aggregated_assistant_reply = value
+                elif kind == "background_task":
+                    background_task_descriptors.append(value)
+
+            if isolated_session:
                 orchestrator._persist_isolated_response(
                     message,
                     aggregated_assistant_reply,
                     background_task_descriptors=background_task_descriptors,
                 )
             else:
-                # Reserve turn ID and load history atomically
-                # Note: Concurrent requests may commit between history load and workflow
-                # completion, causing this workflow to run with slightly stale history.
-                # This is acceptable as turn-order commit below ensures database consistency.
-                async with orchestrator._session_lock:
-                    turn_id = orchestrator._next_turn_id
-                    orchestrator._next_turn_id += 1
-                    history = orchestrator.session_manager.load_history()
-
-                # Filter and normalize (expensive operations outside lock)
-                history = self._conversation_history_messages(history)
-                transcript_messages = orchestrator._normalize_transcript_messages(
-                    [*history, {"role": "user", "content": message}]
-                )
-
-                aggregated_assistant_reply = ""
-                async for kind, value in self._stream_workflow_response(
-                    orchestrator,
-                    transcript_messages,
-                    include_tool_notices=True,
-                ):
-                    if kind == "notice":
-                        yield value
-                    elif kind == "chunk":
-                        streamed_response = True
-                        yield value
-                    elif kind == "final":
-                        aggregated_assistant_reply = value
-                    elif kind == "background_task":
-                        background_task_descriptors.append(value)
-
-                # Commit in turn order (handles concurrent requests properly)
                 await orchestrator._commit_completed_turn(
                     turn_id,
                     message,
@@ -1043,10 +863,9 @@ Guidelines:
                     background_task_descriptors=background_task_descriptors,
                 )
 
-            if aggregated_assistant_reply.strip():
-                if not streamed_response:
-                    yield aggregated_assistant_reply
-            else:
+            if aggregated_assistant_reply.strip() and not streamed_response:
+                yield aggregated_assistant_reply
+            elif not aggregated_assistant_reply.strip():
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
             error_msg = f"Error processing message: {e}"

@@ -19,6 +19,35 @@ from mada.core.database import ChatSessionManager
 CollectMessageResponse = Callable[..., Awaitable[str]]
 
 
+def _parse_background_task_descriptor_payload(value: str) -> Any | None:
+    """
+    Parse JSON from a string, trying both the full string and the widest {...} substring.
+
+    Returns:
+        Parsed JSON object/array, or None if parsing fails.
+    """
+    value = value.strip()
+    if not value:
+        return None
+
+    # Try full string first
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting widest {...} substring
+    start = value.find("{")
+    end = value.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(value[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
 class BackgroundTaskManager:
     """
     Manage interface background queries and MCP server-side background tools.
@@ -81,19 +110,7 @@ class BackgroundTaskManager:
             RuntimeError: If called without a running event loop while a poller
                 needs to be created.
         """
-        reply_text = reply_text.strip()
-        try:
-            descriptor = json.loads(reply_text)
-        except json.JSONDecodeError:
-            descriptor = None
-            start = reply_text.find("{")
-            end = reply_text.rfind("}")
-            if start != -1 and end > start:
-                try:
-                    descriptor = json.loads(reply_text[start : end + 1])
-                except json.JSONDecodeError:
-                    descriptor = None
-
+        descriptor = _parse_background_task_descriptor_payload(reply_text)
         if not isinstance(descriptor, dict) or not descriptor.get("task_id"):
             return
 
