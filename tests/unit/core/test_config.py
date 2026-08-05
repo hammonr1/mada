@@ -5,6 +5,7 @@ import pytest
 
 from mada.core.config import (
     DEFAULT_ORCHESTRATION_MODE,
+    AppConfig,
     PostgreSQLConfig,
     SQLiteConfig,
     load_orchestration_config,
@@ -96,3 +97,40 @@ class TestOrchestrationConfig:
     def test_load_orchestration_config_rejects_non_object_blocks(self, invalid_value):
         with pytest.raises(ValueError, match="'orchestration' must be an object"):
             load_orchestration_config(invalid_value)
+
+
+@pytest.mark.unit
+class TestAppConfig:
+    def test_app_config_loads_verify_settings(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MADA_CA_BUNDLE", "/tmp/mada-ca.pem")
+
+        config = AppConfig.from_dict(
+            {
+                "model": {
+                    "provider": "openai",
+                    "model": "gpt-4.1-mini",
+                    "api_key": "sk-test",
+                    "base_url": "https://example.invalid/v1",
+                    "verify": False,
+                },
+                "agents": [
+                    {
+                        "agent_name": "TestAgent",
+                        "description": "Test agent",
+                        "instructions": "You are a test agent.",
+                        "mcp_servers": ["test_server"],
+                    }
+                ],
+                "database": {"type": "sqlite", "path": str(tmp_path / "mada.db")},
+                "mcp_servers": {
+                    "test_server": {
+                        "transport": "streamable-http",
+                        "url": "https://mcp.example.invalid/mcp",
+                        "verify": "${MADA_CA_BUNDLE}",
+                    }
+                },
+            }
+        )
+
+        assert config.model.verify is False
+        assert config.mcp_servers["test_server"].verify == "/tmp/mada-ca.pem"

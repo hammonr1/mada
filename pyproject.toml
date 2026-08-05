@@ -26,6 +26,7 @@ dependencies = [
     "python-dotenv",
     "psycopg2",
     "tiktoken",
+    "truststore",
     "uvicorn",
     "click"
 ]
