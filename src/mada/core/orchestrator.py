@@ -736,11 +736,13 @@ Guidelines:
             return description
         return f"{description} Skills: {'; '.join(skill_lines)}"
 
-    async def _load_remote_a2a_agent_cards(self) -> None:
+    async def _load_remote_a2a_agent_cards(self) -> List[Dict[str, str]]:
         """
         Fetch remote A2A agent cards for planner routing context.
         """
         self._a2a_agent_cards.clear()
+        active_agents = {}
+        failed_agents = []
         for agent_name, agent_config in self.a2a_agents.items():
             client = self._a2a_clients_by_agent.get(agent_name)
             if client is None:
@@ -748,16 +750,33 @@ Guidelines:
                 self._a2a_clients_by_agent[agent_name] = client
             try:
                 card = await client.get_agent_card()
+                if not card:
+                    raise RuntimeError(agent_config.card_url or agent_config.url)
             except Exception as exc:
-                raise RuntimeError(
-                    f"Could not fetch A2A agent card for {agent_name}: {exc}"
-                ) from exc
-            if not card:
-                raise RuntimeError(
-                    f"Could not fetch A2A agent card for {agent_name}: "
-                    f"{agent_config.card_url or agent_config.url}"
+                LOG.warning(
+                    "Could not fetch A2A agent card for %s: %s",
+                    agent_name,
+                    exc,
                 )
+                failed_agents.append(
+                    {
+                        "agent": agent_name,
+                        "url": agent_config.card_url or agent_config.url,
+                        "error": str(exc),
+                    }
+                )
+                try:
+                    await client.aclose()
+                except Exception:
+                    LOG.debug("Error closing failed A2A client", exc_info=True)
+                self._a2a_clients_by_agent.pop(agent_name, None)
+                continue
+
             self._a2a_agent_cards[agent_name] = card
+            active_agents[agent_name] = agent_config
+
+        self.a2a_agents = active_agents
+        return failed_agents
 
     async def initialize_orchestrator(
         self,
@@ -1088,13 +1107,35 @@ Guidelines:
                 "background_task_descriptors": background_task_descriptors or [],
             }
 
-            while self._next_turn_commit_id in self._completed_turns:
-                completed = self._completed_turns.pop(self._next_turn_commit_id)
-                self._merge_completed_session(
-                    completed["run_session"], completed["history_lengths"]
-                )
-                self._persist_completed_turn(completed)
+            self._drain_completed_turns_locked()
+
+    async def _retire_failed_turn(self, turn_id: int) -> None:
+        """
+        Mark a reserved turn as complete without persisting it.
+        """
+        async with self._session_lock:
+            if turn_id < self._next_turn_commit_id:
+                return
+            self._completed_turns[turn_id] = {"skip": True}
+            self._drain_completed_turns_locked()
+
+    def _drain_completed_turns_locked(self) -> None:
+        """
+        Persist queued turns in order.
+
+        The caller must hold `_session_lock`.
+        """
+        while self._next_turn_commit_id in self._completed_turns:
+            completed = self._completed_turns.pop(self._next_turn_commit_id)
+            if completed.get("skip"):
                 self._next_turn_commit_id += 1
+                continue
+
+            self._merge_completed_session(
+                completed["run_session"], completed["history_lengths"]
+            )
+            self._persist_completed_turn(completed)
+            self._next_turn_commit_id += 1
 
     def _merge_completed_session(
         self,
@@ -1228,6 +1269,15 @@ Guidelines:
             ):
                 first_tool_state["name"] = str(internal_tool_call_name)
                 first_tool_call.set()
+                continue
+
+            response_replacement = getattr(
+                response_chunk,
+                "_mada_response_replacement",
+                None,
+            )
+            if response_replacement is not None:
+                response_chunks = [str(response_replacement)]
                 continue
 
             response_chunks.append(response_chunk)

@@ -6,6 +6,7 @@ Magentic orchestration strategy implementation.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Tuple
 
 from agent_framework import Agent, Message
 
-from mada.core.config import AgentConfig, MCPServerConfig
+from mada.core.config import AgentConfig, MCPServerConfig, RemoteA2AAgentConfig
 from mada.core.orchestration.agent_as_tool_strategy import (
     AgentAsToolOrchestrationStrategy,
 )
@@ -45,6 +46,17 @@ class _InternalToolCallSignal(str):
     def __new__(cls, tool_call_name: str):
         value = str.__new__(cls, "")
         value._mada_tool_call_name = tool_call_name
+        return value
+
+
+class _InternalResponseReplacement(str):
+    """
+    Empty stream chunk that replaces previously collected response text.
+    """
+
+    def __new__(cls, replacement: str):
+        value = str.__new__(cls, "")
+        value._mada_response_replacement = replacement
         return value
 
 
@@ -184,6 +196,7 @@ Guidelines:
         "content",
         "text",
         "contents",
+        "items",
         "messages",
         "data",
     )
@@ -196,6 +209,7 @@ Guidelines:
     )
 
     _TOOL_COLLECTION_KEYS = ("tool_calls", "tools", "function_calls", "functions")
+    _TOOL_RECURSION_KEYS = ("contents", "items", "messages", "data")
 
     _FINAL_EVENT_TYPES = frozenset(
         {"final", "final_output", "final_response", "result"}
@@ -309,7 +323,12 @@ Guidelines:
         return False
 
     _BACKGROUND_TASK_STATUS_PATTERN = re.compile(
-        r"^\[(?:task-|[^\]]+)\]\s*(?:Started|Running|Waiting)", re.IGNORECASE
+        r"^(?:"
+        r"\[task-[^\]]+\]\s+Started in background\.?"
+        r"|\[[^\]]+\]\s+Started background tool(?:\s+`[^`]+`)?"
+        r"|\[background-task\]\s+Started(?:\s+tool(?:\s+`[^`]+`)?)?"
+        r")$",
+        re.IGNORECASE,
     )
 
     @classmethod
@@ -342,15 +361,35 @@ Guidelines:
             return True
 
         if any(
-            cls._payload_value(payload, key) is not None for key in cls._TOOL_CALL_KEYS
+            cls._has_tool_call_payload(cls._payload_value(payload, key))
+            for key in cls._TOOL_CALL_KEYS
         ):
             return True
 
-        contents = cls._payload_value(payload, "contents")
-        if isinstance(contents, (list, tuple)):
-            return any(cls._contains_tool_call(item) for item in contents)
+        for key in cls._TOOL_RECURSION_KEYS:
+            value = cls._payload_value(payload, key)
+            if isinstance(value, (list, tuple)):
+                if any(cls._contains_tool_call(item) for item in value):
+                    return True
+            elif isinstance(value, dict) and cls._contains_tool_call(value):
+                return True
 
         return False
+
+    @classmethod
+    def _has_tool_call_payload(cls, value: Any) -> bool:
+        """
+        Return whether a tool-call field contains an actual call payload.
+        """
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, dict):
+            return bool(value)
+        if isinstance(value, (list, tuple, set)):
+            return any(cls._has_tool_call_payload(item) for item in value)
+        return True
 
     @staticmethod
     def _tool_call_signals(
@@ -402,7 +441,7 @@ Guidelines:
 
         if event_type == "executor_invoked":
             has_tools = any(
-                cls._payload_value(data, key) is not None
+                cls._has_tool_call_payload(cls._payload_value(data, key))
                 for key in cls._TOOL_COLLECTION_KEYS
             )
             if not has_tools or not executor_id:
@@ -593,6 +632,12 @@ Guidelines:
         if isinstance(result, AsyncIterable):
             async for event in result:
                 yield event
+            if hasattr(result, "get_final_response"):
+                final = result.get_final_response()
+                if inspect.isawaitable(final):
+                    final = await final
+                if final is not None:
+                    yield final
             return
 
         if hasattr(result, "__iter__") and not isinstance(result, (str, dict)):
@@ -667,7 +712,7 @@ Guidelines:
         """
         Stream Magentic notices and return the final assistant reply as an event.
         """
-        streamed_text_parts = []
+        streamed_text = ""
         final_text = ""
         background_task_descriptors = []
         seen_executor_ids = set()
@@ -698,24 +743,47 @@ Guidelines:
                 final_text = event_text
                 continue
 
-            streamed_text_parts.append(event_text)
-            yield "chunk", event_text
+            chunk, streamed_text = self._stream_text_update(streamed_text, event_text)
+            if chunk:
+                yield "chunk", chunk
 
-        main_output = final_text or "".join(streamed_text_parts)
-        if not main_output:
-            main_output = self._background_task_ack(background_task_descriptors)
+        # Background task ack takes precedence over partial streamed text
+        bg_ack = self._background_task_ack(background_task_descriptors)
+        if bg_ack:
+            main_output = bg_ack
+        else:
+            main_output = final_text or streamed_text
 
-        # Stream the final/fallback text if it differs from what was already streamed
-        streamed_text = "".join(streamed_text_parts)
+        # Stream delta/replacement if main_output differs from streamed
         if main_output and main_output != streamed_text:
-            yield "chunk", main_output
+            if bg_ack:
+                # Background task ack replaces streamed text
+                yield "chunk", _InternalResponseReplacement(main_output)
+            elif final_text and final_text.startswith(streamed_text):
+                # Final text extends streamed - yield delta only
+                delta = final_text[len(streamed_text) :]
+                if delta:
+                    yield "chunk", delta
+            elif final_text:
+                # Final text replaces streamed
+                yield "chunk", _InternalResponseReplacement(main_output)
         yield "final", main_output
+
+    @staticmethod
+    def _stream_text_update(streamed_text: str, event_text: str) -> Tuple[str, str]:
+        """
+        Return the next display chunk for delta or cumulative text updates.
+        """
+        if event_text.startswith(streamed_text):
+            return event_text[len(streamed_text) :], event_text
+        return event_text, streamed_text + event_text
 
     async def initialize(
         self,
         orchestrator: "MADAOrchestrator",
         agent_configs: List[AgentConfig],
         mcp_servers: Dict[str, MCPServerConfig] | None = None,
+        a2a_agents: Dict[str, RemoteA2AAgentConfig] | None = None,
     ) -> Tuple[str, List[str]]:
         """
         Initialize the Magentic orchestration flow end to end.
@@ -730,6 +798,13 @@ Guidelines:
         orchestrator._agent_descriptions = {}
         participant_configs = orchestrator.resolve_participant_configs(agent_configs)
         orchestrator.mcp_servers = mcp_servers or {}
+        orchestrator.a2a_agents = {}
+        orchestrator._a2a_agent_cards.clear()
+        if a2a_agents:
+            LOG.warning(
+                "Remote A2A agents are configured but are not used in "
+                "magentic orchestration mode."
+            )
 
         all_tools, failed_servers, failed_agents = await self._initialize_participants(
             orchestrator, participant_configs
@@ -774,7 +849,7 @@ Guidelines:
 
         transcript_messages = orchestrator._normalize_transcript_messages(messages)
         try:
-            streamed = False
+            streamed_text = ""
             final_text = ""
             async for kind, value in self._stream_workflow_response(
                 orchestrator,
@@ -782,14 +857,26 @@ Guidelines:
                 include_tool_notices=False,
             ):
                 if kind == "chunk":
-                    streamed = True
+                    streamed_text += value
                     yield value
                 elif kind == "final":
                     final_text = value
                 elif kind == "background_task":
                     continue
-            if final_text and not streamed:
-                yield final_text
+
+            # If final differs from streamed, yield the authoritative final text
+            if final_text and final_text != streamed_text:
+                # Check if it's a response replacement signal
+                if isinstance(final_text, _InternalResponseReplacement):
+                    yield final_text._mada_response_replacement
+                elif not final_text.startswith(streamed_text):
+                    # Complete replacement - yield the whole final text
+                    yield final_text
+                else:
+                    # Extension - yield only the delta
+                    delta = final_text[len(streamed_text) :]
+                    if delta:
+                        yield delta
             elif not final_text:
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
@@ -815,6 +902,7 @@ Guidelines:
             streamed_response = False
             background_task_descriptors = []
             turn_id = None
+            streamed_text = ""
 
             # Load history inside lock for non-isolated sessions to ensure atomicity
             # between turn_id reservation and history snapshot
@@ -841,6 +929,7 @@ Guidelines:
                     yield value
                 elif kind == "chunk":
                     streamed_response = True
+                    streamed_text += value
                     yield value
                 elif kind == "final":
                     aggregated_assistant_reply = value
@@ -865,9 +954,21 @@ Guidelines:
 
             if aggregated_assistant_reply.strip() and not streamed_response:
                 yield aggregated_assistant_reply
+            elif (
+                aggregated_assistant_reply.strip()
+                and streamed_text
+                and aggregated_assistant_reply != streamed_text
+                and not aggregated_assistant_reply.startswith(streamed_text)
+            ):
+                yield _InternalResponseReplacement(aggregated_assistant_reply)
             elif not aggregated_assistant_reply.strip():
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
+            if turn_id is not None:
+                try:
+                    await orchestrator._retire_failed_turn(turn_id)
+                except Exception:
+                    LOG.exception("Failed to retire Magentic turn %s", turn_id)
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)
             traceback.print_exc()

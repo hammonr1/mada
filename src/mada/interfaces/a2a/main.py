@@ -293,10 +293,11 @@ class MADAA2AService:
         """
         if self.orchestrator is None:
             raise RuntimeError("Orchestrator not initialized")
-        return await self.orchestrator.collect_message_response(
-            message,
-            isolated_session=True,
-        )
+        async with self._request_session():
+            return await self.orchestrator.collect_message_response(
+                message,
+                isolated_session=True,
+            )
 
     async def stream_response(self, message: str) -> AsyncGenerator[str, None]:
         """
@@ -305,11 +306,31 @@ class MADAA2AService:
         if self.orchestrator is None:
             raise RuntimeError("Orchestrator not initialized")
 
-        async for chunk in self.orchestrator.process_message(
-            message,
-            isolated_session=True,
-        ):
-            yield chunk
+        async with self._request_session():
+            async for chunk in self.orchestrator.process_message(
+                message,
+                isolated_session=True,
+            ):
+                yield chunk
+
+    @asynccontextmanager
+    async def _request_session(self):
+        """
+        Persist one A2A request under its own chat session.
+        """
+        if self.orchestrator is None:
+            raise RuntimeError("Orchestrator not initialized")
+
+        session_manager = self.orchestrator.session_manager
+        async with self.orchestrator._session_lock:
+            previous_session_id = session_manager.current_session_id
+            request_session_id = session_manager.create_session_id()
+            session_manager.current_session_id = request_session_id
+            session_manager.create_new_session(request_session_id)
+            try:
+                yield
+            finally:
+                session_manager.current_session_id = previous_session_id
 
 
 def _extract_message_text(value: Any) -> str:
@@ -484,7 +505,7 @@ def run_a2a(
     """
     Launch the A2A server.
     """
-    card_url = public_url or f"http://{host}:{port}"
+    card_url = _resolve_public_a2a_url(host, port, public_url)
     app = create_a2a_app(
         config=config,
         public_url=card_url,
@@ -492,6 +513,20 @@ def run_a2a(
         bearer_token=bearer_token,
     )
     uvicorn.run(app, host=host, port=port)
+
+
+def _resolve_public_a2a_url(
+    host: str,
+    port: int,
+    public_url: Optional[str] = None,
+) -> str:
+    """
+    Return the URL to advertise in the A2A agent card.
+    """
+    if public_url:
+        return public_url
+    advertised_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    return f"http://{advertised_host}:{port}"
 
 
 def a2a_entrypoint(
@@ -508,7 +543,7 @@ def a2a_entrypoint(
     try:
         print(f"Loading configuration from {config_file}")
         config = load_config_from_json(config_file)
-        card_url = public_url or f"http://{host}:{port}"
+        card_url = _resolve_public_a2a_url(host, port, public_url)
         print(f"Serving A2A API on {card_url}")
         run_a2a(
             config=config,

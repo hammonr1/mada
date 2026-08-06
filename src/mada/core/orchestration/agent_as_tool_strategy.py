@@ -233,10 +233,12 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         orchestrator: "MADAOrchestrator",
         failed_servers: List[Dict[str, str]],
         failed_agents: List[str],
+        failed_a2a_agents: List[Dict[str, str]] | None = None,
     ) -> str:
         """
         Build a user-facing initialization summary for the current run.
         """
+        failed_a2a_agents = failed_a2a_agents or []
         status_parts = [
             (
                 "Connection Successful: Orchestrator initialized with "
@@ -255,6 +257,16 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                     f"  • {failed_server['agent']}/{failed_server['server']} at {failed_server['url']}"
                 )
                 status_parts.append(f"    Error: {failed_server['error']}")
+
+        if failed_a2a_agents:
+            status_parts.append(
+                f"\nWARNING: {len(failed_a2a_agents)} remote A2A agent(s) unavailable:"
+            )
+            for failed_agent in failed_a2a_agents:
+                status_parts.append(
+                    f"  • {failed_agent['agent']} at {failed_agent['url']}"
+                )
+                status_parts.append(f"    Error: {failed_agent['error']}")
 
         if failed_agents:
             status_parts.append(
@@ -353,7 +365,7 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         participant_configs = orchestrator.resolve_participant_configs(agent_configs)
         orchestrator.mcp_servers = mcp_servers or {}
         orchestrator.a2a_agents = a2a_agents or {}
-        await orchestrator._load_remote_a2a_agent_cards()
+        failed_a2a_agents = await orchestrator._load_remote_a2a_agent_cards()
         all_tools, failed_servers, failed_agents = await self._initialize_participants(
             orchestrator, participant_configs
         )
@@ -364,7 +376,12 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         self._initialize_planning_agent(
             orchestrator, agent_configs, active_participant_configs
         )
-        status = self._build_status(orchestrator, failed_servers, failed_agents)
+        status = self._build_status(
+            orchestrator,
+            failed_servers,
+            failed_agents,
+            failed_a2a_agents,
+        )
         LOG.info(status)
 
         return status, all_tools
