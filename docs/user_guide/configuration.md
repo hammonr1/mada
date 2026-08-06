@@ -11,6 +11,7 @@ Additionally, there are optional configuration options:
 - [Database Configuration](#optional-database-configuration)
 - [Gradio Interface Configuration](#optional-gradio-interface-configuration)
 - [Orchestration Configuration](#optional-orchestration-configuration)
+- [A2A Configuration](#optional-a2a-configuration)
 
 ## Agent Configuration
 
@@ -244,6 +245,120 @@ hidden Magentic manager. Otherwise MADA uses its built-in manager instructions.
     "mode": "magentic",
     "participants": ["JobManagementAgent", "InverseDesignAgent"]
 }
+```
+
+## (Optional) A2A Configuration
+
+MADA can participate in Agent-to-Agent (A2A) workflows in two directions:
+
+- `a2a.agents` is the client-side configuration. It lists remote A2A agents
+  that MADA can call as tools from the orchestrator.
+- `a2a.self` is the server-side configuration. It describes MADA's own A2A
+  identity when you run MADA with `mada-a2a` so other agents can discover and
+  call MADA.
+
+These settings do not replace CLI or Gradio. CLI and Gradio are interactive
+interfaces for users. A2A mode starts an HTTP service so other A2A agents can
+discover MADA and delegate tasks to it.
+
+In code, the same split is reflected by the modules: `mada.core.a2a_client`
+handles outbound calls from MADA to remote A2A agents, while
+`mada.interfaces.a2a.main` exposes MADA itself as an inbound A2A service.
+
+### Remote A2A Agents
+
+Use `a2a.agents` when the MADA orchestrator should delegate work to other A2A
+agents. Each configured remote agent is exposed to the planning agent as a tool,
+using the remote agent card for routing context. MADA fails startup if a
+configured remote A2A agent card cannot be fetched.
+
+#### Fields
+
+| Field Name    | Description                                                                 | Required? | Default |
+| ------------- | --------------------------------------------------------------------------- | --------- | ------- |
+| `url`         | JSON-RPC endpoint for the remote A2A agent.                                  | Yes       | N/A     |
+| `card_url`    | Explicit URL for the remote agent card. If omitted, MADA tries standard A2A card paths derived from `url`. | No | None |
+| `timeout`     | HTTP timeout in seconds for calls to the remote agent.                       | No        | `180`   |
+| `api_key`     | Optional API key sent as `x-api-key`.                                        | No        | None    |
+| `headers`     | Additional HTTP headers to send to the remote agent.                         | No        | `{}`    |
+
+#### Example
+
+```json
+"a2a": {
+  "agents": {
+    "LangChainAgent": {
+      "url": "http://localhost:9111/",
+      "card_url": "http://localhost:9111/.well-known/agent-card.json"
+    },
+    "GoogleADKAgent": {
+      "url": "http://localhost:9112/",
+      "card_url": "http://localhost:9112/.well-known/agent-card.json"
+    }
+  }
+}
+```
+
+The example MCP servers are used inside the remote A2A agents, not as local
+MADA MCP servers. The MADA orchestrator should report `0 MCP Servers` and `2
+remote A2A agents` for this config. The remote agent card endpoints must be
+reachable so MADA can discover each remote agent's skills. Install optional
+dependencies and launch the MCP servers and A2A agents with the config path:
+
+```bash
+pip install -e ".[a2a-examples]"
+python examples/a2a/a2a_table_mcp_server.py --port 9101
+python examples/a2a/a2a_average_mcp_server.py --port 9102
+python examples/a2a/a2a_langchain_agent.py --port 9111 --config configs/example_a2a_agents.json --mcp-url http://localhost:9101/mcp
+python examples/a2a/a2a_google_adk_agent.py --port 9112 --config configs/example_a2a_agents.json --mcp-url http://localhost:9102/mcp
+```
+
+Use each example agent's `--model`, `--api-key`, and `--base-url` flags when
+you want that remote agent to use a different model endpoint from MADA. The
+Google ADK example also accepts `--provider`.
+
+### MADA's A2A Agent Card
+
+Use `a2a.self` when you want MADA itself to be discoverable by other A2A agents.
+This block is used by `mada-a2a` and `mada a2a`; it is not used by CLI or Gradio
+mode. These are commands within this repo and not actual MADA repos like `mada-tools`.
+
+The `card_path` value points to a standalone A2A agent card JSON file. Relative
+paths are resolved relative to the configuration file. When the card is served,
+MADA overwrites the card's `url` field with the runtime public URL from
+`a2a.self.url` or `--public-url`, and advertises A2A protocol `1.0.0`.
+
+#### Fields
+
+| Field Name  | Description                                                                 | Required? | Default |
+| ----------- | --------------------------------------------------------------------------- | --------- | ------- |
+| `card_path` | Path to MADA's standalone A2A agent card JSON file.                          | No        | None    |
+| `url`       | Public URL advertised in the served agent card.                              | No        | Runtime host and port |
+| `name`      | Name used by the generated card fallback when no `card_path` is supplied.    | No        | `MADA`  |
+| `description` | Description used by the generated card fallback when no `card_path` is supplied. | No | `MADA multi-agent orchestration service` |
+| `skills`    | Skills used by the generated card fallback when no `card_path` is supplied.  | No        | Derived from configured agents |
+
+#### Example
+
+```json
+"a2a": {
+  "self": {
+    "card_path": "agent_cards/mada_orchestrator_card.json",
+    "url": "http://localhost:9120",
+  }
+}
+```
+
+Launch MADA as an A2A service with:
+
+```bash
+mada-a2a --port 9120 configs/example_a2a_agents.json
+```
+
+Other A2A agents can then discover MADA at:
+
+```text
+http://localhost:9120/.well-known/agent-card.json
 ```
 
 ## (Optional) Database Configuration

@@ -8,7 +8,7 @@ Base interface for orchestrator initialization strategies.
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Tuple
 
-from mada.core.config import AgentConfig, MCPServerConfig
+from mada.core.config import AgentConfig, MCPServerConfig, RemoteA2AAgentConfig
 
 if TYPE_CHECKING:
     from mada.core.orchestrator import MADAOrchestrator
@@ -32,6 +32,7 @@ class BaseOrchestrationStrategy(ABC):
         orchestrator: "MADAOrchestrator",
         agent_configs: List[AgentConfig],
         mcp_servers: Dict[str, MCPServerConfig] | None = None,
+        a2a_agents: Dict[str, RemoteA2AAgentConfig] | None = None,
     ) -> Tuple[str, List[str]]:
         """
         Initialize the orchestrator for the strategy's orchestration mode.
@@ -40,6 +41,7 @@ class BaseOrchestrationStrategy(ABC):
             orchestrator: Orchestrator instance being configured.
             agent_configs: Agent definitions available to the strategy.
             mcp_servers: Named MCP server definitions available to the strategy.
+            a2a_agents: Named remote A2A agents available to the strategy.
 
         Returns:
             A user-facing status message and a flat list of connected tool names.
