@@ -12,6 +12,7 @@ using the Planning Agent + Agent-as-Tool pattern.
 import asyncio
 import copy
 import logging
+import re
 import traceback
 from types import TracebackType
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Type
@@ -19,16 +20,25 @@ from contextlib import AsyncExitStack
 import httpx
 import httpcore
 
-from agent_framework import Agent, AgentSession, MCPStdioTool, MCPStreamableHTTPTool
+from agent_framework import (
+    Agent,
+    AgentSession,
+    FunctionInvocationContext,
+    FunctionTool,
+    MCPStdioTool,
+    MCPStreamableHTTPTool,
+)
 from agent_framework.exceptions import ToolException
 
 from mada.core.background_tasks import BackgroundTaskManager
+from mada.core.a2a_client import RemoteA2AClient
 from mada.core.config import (
     AgentConfig,
     DatabaseConfig,
     ModelConfig,
     MCPServerConfig,
     OrchestrationConfig,
+    RemoteA2AAgentConfig,
 )
 from mada.core.coordinator import MCPAgentManager
 from mada.core.database import ChatSessionManager
@@ -90,12 +100,15 @@ class MADAOrchestrator(MCPAgentManager):
         self.specialist_agents = []
         self.planning_agent = None
         self.mcp_servers = {}
+        self.a2a_agents = {}
+        self._a2a_agent_cards: Dict[str, Dict[str, Any]] = {}
         self.session = None
         self._session_lock = asyncio.Lock()
         self._next_turn_id = 1
         self._next_turn_commit_id = 1
         self._completed_turns: Dict[int, Dict[str, Any]] = {}
         self._mcp_tools_by_server: Dict[str, Any] = {}
+        self._a2a_clients_by_agent: Dict[str, RemoteA2AClient] = {}
         self._agent_descriptions = {}
         self._mcp_tool_count = 0
         self.orchestration = orchestration_config or OrchestrationConfig()
@@ -111,6 +124,18 @@ class MADAOrchestrator(MCPAgentManager):
         )
         # Authentication bearer token
         self.bearer_token = bearer_token
+
+    @staticmethod
+    def _tool_name(value: str) -> str:
+        """
+        Convert a configured remote agent name into a Python tool function name.
+        """
+        normalized = re.sub(r"[^0-9a-zA-Z_]+", "_", value.strip()).strip("_").lower()
+        if not normalized:
+            normalized = "remote_a2a_agent"
+        if normalized[0].isdigit():
+            normalized = f"agent_{normalized}"
+        return normalized
 
     def _build_orchestration_strategy(self, mode: str) -> BaseOrchestrationStrategy:
         """
@@ -508,6 +533,7 @@ class MADAOrchestrator(MCPAgentManager):
             Planning agent instance with specialist agents exposed as tools.
         """
         team_description = self._generate_team_description(participant_configs)
+        remote_a2a_description = self._generate_remote_a2a_description()
 
         # Convert each specialist agent to a tool using as_tool()
         agent_tools = []
@@ -522,6 +548,8 @@ class MADAOrchestrator(MCPAgentManager):
                 arg_description="The task to delegate to this agent",
             )
             agent_tools.append(agent_tool)
+
+        agent_tools.extend(self._create_remote_a2a_agent_tools())
 
         # Try to get a user defined planning agent config
         planning_cfg = self._get_planning_agent_config(agent_configs)
@@ -550,8 +578,12 @@ Your specialist agents (available as tools) can be delegated tasks.
 Your specialist agents (available as tools):
 {team_description}
 
+Remote A2A agents (available as tools):
+{remote_a2a_description}
+
 Guidelines:
 - Delegate to specialist agents when the request matches their expertise
+- Delegate to remote A2A agents when their descriptions match the request
 - Answer directly only for questions about the system itself
 - Avoid infinite loops between agents
 - After receiving results, synthesize and respond to the user
@@ -574,6 +606,74 @@ Guidelines:
 
         return planning_agent
 
+    def _create_remote_a2a_agent_tools(self) -> List[Any]:
+        """
+        Create planner tools that delegate tasks to configured remote A2A agents.
+        """
+        tools = []
+        for agent_name, agent_config in self.a2a_agents.items():
+            client = self._a2a_clients_by_agent.get(agent_name)
+            if client is None:
+                client = RemoteA2AClient(agent_name, agent_config)
+                self._a2a_clients_by_agent[agent_name] = client
+
+            card = self._a2a_agent_cards.get(agent_name, {})
+            description = self._remote_a2a_description(
+                card["description"],
+                card,
+            )
+            tool_name = f"call_{self._tool_name(agent_name)}"
+            tools.append(
+                self._build_remote_a2a_agent_tool(
+                    tool_name,
+                    agent_name,
+                    description,
+                    client,
+                )
+            )
+
+        return tools
+
+    def _build_remote_a2a_agent_tool(
+        self,
+        tool_name: str,
+        agent_name: str,
+        description: str,
+        client: RemoteA2AClient,
+    ) -> FunctionTool:
+        """
+        Build one remote A2A planner tool with a clean public signature.
+        """
+        input_schema = {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The task to delegate to this remote A2A agent",
+                }
+            },
+            "required": ["task"],
+            "additionalProperties": False,
+        }
+
+        async def call_remote_a2a_agent(
+            ctx: FunctionInvocationContext, **kwargs: Any
+        ) -> str:
+            task = str(kwargs.get("task", "")).strip()
+            if not task:
+                raise ValueError("Missing task for remote A2A agent")
+            return await client.send_message(task)
+
+        return FunctionTool(
+            name=tool_name,
+            description=(
+                f"Delegate a task to remote A2A agent {agent_name}. {description}"
+            ),
+            func=call_remote_a2a_agent,
+            input_model=input_schema,
+            approval_mode="never_require",
+        )
+
     def _generate_team_description(self, agent_configs: List[AgentConfig]) -> str:
         """
         Generate formatted team member descriptions.
@@ -593,10 +693,69 @@ Guidelines:
             return "    (no specialist agents configured)"
         return "\n".join(lines)
 
+    def _generate_remote_a2a_description(self) -> str:
+        """
+        Generate formatted remote A2A agent descriptions.
+        """
+        lines = []
+        for agent_name, agent_config in self.a2a_agents.items():
+            card = self._a2a_agent_cards.get(agent_name, {})
+            description = self._remote_a2a_description(
+                card["description"],
+                card,
+            )
+            lines.append(f"    {agent_name}: {description}")
+        if not lines:
+            return "    (no remote A2A agents configured)"
+        return "\n".join(lines)
+
+    def _remote_a2a_description(self, description: str, card: dict[str, Any]) -> str:
+        """
+        Add agent-card skill summaries to a remote A2A description.
+        """
+        skills = card.get("skills")
+        if not isinstance(skills, list) or not skills:
+            return description
+
+        skill_lines = []
+        for skill in skills:
+            if not isinstance(skill, dict):
+                continue
+            skill_name = skill.get("name") or skill.get("id") or "skill"
+            skill_description = skill.get("description") or ""
+            skill_lines.append(f"{skill_name}: {skill_description}".strip())
+        if not skill_lines:
+            return description
+        return f"{description} Skills: {'; '.join(skill_lines)}"
+
+    async def _load_remote_a2a_agent_cards(self) -> None:
+        """
+        Fetch remote A2A agent cards for planner routing context.
+        """
+        self._a2a_agent_cards.clear()
+        for agent_name, agent_config in self.a2a_agents.items():
+            client = self._a2a_clients_by_agent.get(agent_name)
+            if client is None:
+                client = RemoteA2AClient(agent_name, agent_config)
+                self._a2a_clients_by_agent[agent_name] = client
+            try:
+                card = await client.get_agent_card()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not fetch A2A agent card for {agent_name}: {exc}"
+                ) from exc
+            if not card:
+                raise RuntimeError(
+                    f"Could not fetch A2A agent card for {agent_name}: "
+                    f"{agent_config.card_url or agent_config.url}"
+                )
+            self._a2a_agent_cards[agent_name] = card
+
     async def initialize_orchestrator(
         self,
         agent_configs: List[AgentConfig],
         mcp_servers: Dict[str, MCPServerConfig] = None,
+        a2a_agents: Dict[str, RemoteA2AAgentConfig] = None,
     ) -> Tuple[str, List[str]]:
         """
         Initialize the orchestrator with the given agent configurations.
@@ -604,6 +763,7 @@ Guidelines:
         Args:
             agent_configs: List of agent configurations to set up.
             mcp_servers: Dictionary of MCP server configurations.
+            a2a_agents: Dictionary of remote A2A agent configurations.
 
         Returns:
             Tuple containing:
@@ -614,6 +774,7 @@ Guidelines:
             orchestrator=self,
             agent_configs=agent_configs,
             mcp_servers=mcp_servers,
+            a2a_agents=a2a_agents,
         )
 
     def _stringify_openai_content(self, content: Any) -> str:
@@ -1180,6 +1341,9 @@ Guidelines:
             self._next_turn_id = 1
             self._next_turn_commit_id = 1
             self._mcp_tools_by_server.clear()
+            for client in self._a2a_clients_by_agent.values():
+                await client.aclose()
+            self._a2a_clients_by_agent.clear()
             self._agent_descriptions.clear()
             LOG.info("Orchestrator cleanup completed")
         except BaseExceptionGroup as eg:
@@ -1187,7 +1351,8 @@ Guidelines:
             # This is expected when MCP servers failed to connect - their async generators
             # will raise errors during cleanup, which we can safely suppress
             LOG.debug(
-                f"Async cleanup errors suppressed ({len(eg.exceptions)} errors) - this is expected for failed MCP connections"
+                "Async cleanup errors suppressed "
+                f"({len(eg.exceptions)} errors) - this is expected for failed MCP connections"
             )
         except RuntimeError as e:
             # Suppress "Attempted to exit cancel scope in different task" errors

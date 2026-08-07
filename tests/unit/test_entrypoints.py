@@ -9,6 +9,7 @@ Tests for the following entry point modules:
 - mada/interface/gradio/main.py -> The `mada-gradio` command.
 """
 
+import json
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
@@ -18,11 +19,18 @@ import pytest
 from click.testing import CliRunner
 
 from mada.core.config import (
+    A2AConfig,
     MCPServerConfig,
     OpenAIModelConfig,
     OrchestrationConfig,
     SQLiteConfig,
 )
+from mada.interfaces.a2a.main import (
+    MADAA2AService,
+    a2a_entrypoint,
+    create_a2a_app,
+)
+from mada.interfaces.a2a.main import main as a2a_main
 from mada.interfaces.cli.main import MADACLIInterface, async_main
 from mada.interfaces.cli.main import main as cli_main
 from mada.interfaces.gradio.main import (
@@ -40,11 +48,13 @@ from mada.interfaces.openai_api.main import (
     main as openai_api_main,
 )
 from mada.main import (
+    _run_a2a_from_args,
     _run_cli_from_args,
     _run_gradio_from_args,
     _run_openai_api_from_args,
     main,
 )
+from a2a.utils.constants import PROTOCOL_VERSION_1_0, VERSION_HEADER
 
 try:
     from fastapi.testclient import TestClient
@@ -73,6 +83,8 @@ class DummyConfig:
         self.mcp_servers = {"s1": MCPServerConfig(transport="stdio")}
         self.database = database
         self.orchestration = OrchestrationConfig()
+        self.a2a = A2AConfig()
+        self.a2a_agents = {}
 
 
 @pytest.fixture
@@ -157,6 +169,16 @@ class TestMADAOrchestratorCmd:
                     ["--port", "8000", "config.json"]
                 )
 
+        def test_main_dispatches_to_a2a(self, runner):
+            """
+            Test that the main entry point correctly dispatches to the A2A API
+            interface when the 'a2a' mode is specified.
+            """
+            with patch("mada.main._run_a2a_from_args") as mock_run_a2a:
+                result = runner.invoke(main, ["a2a", "--port", "8000", "config.json"])
+                assert result.exit_code == 0
+                mock_run_a2a.assert_called_once_with(["--port", "8000", "config.json"])
+
     class TestRunGradioFromArgs:
         def test_run_gradio_from_args_calls_entrypoint(self):
             """
@@ -230,6 +252,43 @@ class TestMADAOrchestratorCmd:
                 _run_openai_api_from_args(["config.json"])
                 mock_entry.assert_called_once_with(
                     "0.0.0.0", 8000, "mada-team", None, None, "config.json"
+                )
+
+    class TestRunA2AFromArgs:
+        def test_run_a2a_from_args_calls_entrypoint(self):
+            """
+            Test that the helper function `_run_a2a_from_args` calls the A2A
+            entry point with the correct arguments.
+            """
+            with patch("mada.interfaces.a2a.main.a2a_entrypoint") as mock_entry:
+                _run_a2a_from_args(
+                    [
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        "8000",
+                        "--public-url",
+                        "https://mada.example/a2a",
+                        "config.json",
+                    ]
+                )
+                mock_entry.assert_called_once_with(
+                    "127.0.0.1",
+                    8000,
+                    "https://mada.example/a2a",
+                    None,
+                    None,
+                    "config.json",
+                )
+
+        def test_run_a2a_from_args_uses_defaults(self):
+            """
+            Test `_run_a2a_from_args` when optional flags are not provided.
+            """
+            with patch("mada.interfaces.a2a.main.a2a_entrypoint") as mock_entry:
+                _run_a2a_from_args(["config.json"])
+                mock_entry.assert_called_once_with(
+                    "0.0.0.0", 8000, None, None, None, "config.json"
                 )
 
 
@@ -424,6 +483,7 @@ class TestMADAGradioCmd:
                     agents=["a1", "a2"],
                     database_config=db_config,
                     mcp_servers={"s1": MCPServerConfig(transport="stdio")},
+                    a2a_agents={},
                     orchestration_config=OrchestrationConfig(),
                 )
                 mock_iface_cls.assert_called_once()
@@ -809,8 +869,232 @@ class TestMADAOpenAIApiCmd:
                     )
                     body = response.text
 
-                assert response.status_code == 200
-                assert "data: [DONE]" in body
+            assert response.status_code == 200
+            assert "data: [DONE]" in body
+
+
+@pytest.mark.unit
+class TestMADAA2ACmd:
+    class TestA2AMain:
+        def test_main_calls_a2a_entrypoint_with_args(self, runner):
+            """
+            Test that the A2A main function calls the entry point with the
+            correct CLI arguments.
+            """
+            with patch("mada.interfaces.a2a.main.a2a_entrypoint") as mock_entrypoint:
+                result = runner.invoke(
+                    a2a_main,
+                    [
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        "9000",
+                        "--public-url",
+                        "https://mada.example/a2a",
+                        "config.json",
+                    ],
+                )
+
+                assert result.exit_code == 0
+                mock_entrypoint.assert_called_once_with(
+                    "127.0.0.1",
+                    9000,
+                    "https://mada.example/a2a",
+                    None,
+                    None,
+                    "config.json",
+                )
+
+        def test_main_works_with_only_config_file(self, runner):
+            """
+            Test that the A2A main function uses default values when only the
+            configuration file is provided.
+            """
+            with patch("mada.interfaces.a2a.main.a2a_entrypoint") as mock_entrypoint:
+                result = runner.invoke(a2a_main, ["config.json"])
+
+                assert result.exit_code == 0
+                mock_entrypoint.assert_called_once_with(
+                    "0.0.0.0", 8000, None, None, None, "config.json"
+                )
+
+    class TestA2AEntrypoint:
+        def test_a2a_entrypoint_happy_path_uses_config_and_runs_server(
+            self, create_dummy_config: Callable
+        ):
+            """
+            Test that the A2A entry point loads the config and launches the API
+            server.
+            """
+            config = create_dummy_config()
+
+            with (
+                patch(
+                    "mada.interfaces.a2a.main.load_config_from_json",
+                    return_value=config,
+                ) as mock_load,
+                patch("mada.interfaces.a2a.main.run_a2a") as mock_run,
+                patch("mada.interfaces.a2a.main.sys.exit") as mock_exit,
+            ):
+                a2a_entrypoint(
+                    host="127.0.0.1",
+                    port=8000,
+                    public_url="https://mada.example/a2a",
+                    api_key="secret",
+                    bearer_token="token",
+                    config_file="config.json",
+                )
+
+                mock_load.assert_called_once_with("config.json")
+                mock_run.assert_called_once_with(
+                    config=config,
+                    host="127.0.0.1",
+                    port=8000,
+                    public_url="https://mada.example/a2a",
+                    api_key="secret",
+                    bearer_token="token",
+                )
+                mock_exit.assert_not_called()
+
+        def test_a2a_entrypoint_exits_with_code_1_on_exception(self):
+            """
+            Test that the A2A entry point exits with code 1 when an unexpected
+            exception occurs.
+            """
+            with (
+                patch("mada.interfaces.a2a.main.load_config_from_json") as mock_load,
+                patch("mada.interfaces.a2a.main.sys.exit") as mock_exit,
+            ):
+                mock_load.side_effect = RuntimeError("Bad config")
+
+                a2a_entrypoint(
+                    host="127.0.0.1",
+                    port=8000,
+                    public_url=None,
+                    api_key=None,
+                    bearer_token=None,
+                    config_file="config.json",
+                )
+
+                mock_exit.assert_called_once_with(1)
+
+    @pytest.mark.skipif(
+        TestClient is None, reason="fastapi test client is not installed"
+    )
+    class TestCreateA2AApp:
+        def test_agent_card_endpoint_returns_configured_metadata(
+            self, create_dummy_config: Callable
+        ):
+            """
+            Test that the standard agent card endpoint returns A2A metadata.
+            """
+            config = create_dummy_config()
+            config.a2a = A2AConfig(
+                name="MADA Test",
+                description="Test A2A agent",
+                version="9.9.9",
+            )
+
+            with patch.object(MADAA2AService, "shutdown", new=AsyncMock()):
+                app = create_a2a_app(config, public_url="https://mada.example/a2a")
+                with TestClient(app) as client:
+                    response = client.get("/.well-known/agent-card.json")
+
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["name"] == "MADA Test"
+            assert payload["description"] == "Test A2A agent"
+            assert payload["supportedInterfaces"][0]["url"] == (
+                "https://mada.example/a2a"
+            )
+            assert payload["supportedInterfaces"][0]["protocolVersion"] == "1.0"
+            assert payload["capabilities"]["streaming"] is True
+
+        def test_agent_card_endpoint_can_serve_card_file(
+            self, create_dummy_config: Callable, tmp_path: Path
+        ):
+            """
+            Test that the standard agent card endpoint can load a standalone card.
+            """
+            card_path = tmp_path / "agent-card.json"
+            card_path.write_text(
+                json.dumps(
+                    {
+                        "name": "FileBackedMADA",
+                        "description": "Loaded from a card file",
+                        "version": "1.0.0",
+                        "supportedInterfaces": [
+                            {
+                                "url": "http://placeholder",
+                                "protocolBinding": "JSONRPC",
+                                "protocolVersion": "1.0",
+                            }
+                        ],
+                        "skills": [
+                            {
+                                "id": "file-backed",
+                                "name": "File backed card",
+                                "description": "Served from JSON",
+                                "tags": ["a2a"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = create_dummy_config()
+            config.a2a = A2AConfig(card_path=str(card_path))
+
+            service = MADAA2AService(
+                config=config, public_url="https://mada.example/a2a"
+            )
+            payload = service.build_agent_card()
+
+            assert payload["name"] == "FileBackedMADA"
+            assert payload["description"] == "Loaded from a card file"
+            assert payload["supportedInterfaces"][0]["url"] == (
+                "https://mada.example/a2a"
+            )
+            assert payload["supportedInterfaces"][0]["protocolVersion"] == "1.0"
+
+        def test_message_send_returns_a2a_task(self, create_dummy_config: Callable):
+            """
+            Test that JSON-RPC `SendMessage` returns a completed A2A task.
+            """
+            config = create_dummy_config()
+
+            with (
+                patch.object(MADAA2AService, "ensure_started", new=AsyncMock()),
+                patch.object(MADAA2AService, "shutdown", new=AsyncMock()),
+                patch.object(
+                    MADAA2AService,
+                    "collect_response",
+                    new=AsyncMock(return_value="hello from mada"),
+                ),
+            ):
+                app = create_a2a_app(config, public_url="https://mada.example/a2a")
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/",
+                        headers={VERSION_HEADER: PROTOCOL_VERSION_1_0},
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": "req-1",
+                            "method": "SendMessage",
+                            "params": {
+                                "message": {
+                                    "messageId": "msg-1",
+                                    "role": "ROLE_USER",
+                                    "parts": [{"text": "hello"}],
+                                }
+                            },
+                        },
+                    )
+
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["id"] == "req-1"
+            assert payload["result"]["message"]["parts"][0]["text"] == "hello from mada"
 
 
 @pytest.mark.unit
@@ -971,7 +1255,7 @@ class TestMADACLICmd:
                 await cli.run()
 
                 orchestrator_mock.initialize_orchestrator.assert_awaited_once_with(
-                    config.agents, config.mcp_servers
+                    config.agents, config.mcp_servers, config.a2a_agents
                 )
                 orchestrator_mock.background_tasks.run_query.assert_not_called()
 
