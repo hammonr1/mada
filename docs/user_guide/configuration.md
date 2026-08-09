@@ -64,7 +64,12 @@ Agent configuration defines the autonomous agents that MADA will orchestrate in 
 
 ### How Agent Configuration Works
 
-When MADA starts, it reads the agent configuration and creates the selected specialist agents. Each specialist can connect to named MCP servers from the `mcp_servers` block, or use the legacy `server_path` setting for a directly launched stdio MCP server. MADA then runs the configured orchestration mode: `agent-as-tool` exposes specialists as tools to a visible planning agent, while `magentic` coordinates specialists in a peer group chat through a hidden manager.
+When MADA starts, it reads the agent configuration and creates the selected specialist agents. Each specialist can connect to named MCP servers from the `mcp_servers` block, or use the legacy `server_path` setting for a directly launched stdio MCP server.
+
+MADA then runs the configured orchestration mode:
+
+- `agent-as-tool`: Exposes specialists as tools to a visible planning agent.
+- `magentic`: Coordinates specialists in a peer group chat through a hidden manager.
 
 Each agent's configuration allows you to:
 
