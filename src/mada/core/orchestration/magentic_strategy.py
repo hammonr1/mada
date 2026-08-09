@@ -17,9 +17,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Tuple
 from agent_framework import Agent, Message
 
 from mada.core.config import AgentConfig, MCPServerConfig, RemoteA2AAgentConfig
-from mada.core.orchestration.agent_as_tool_strategy import (
-    AgentAsToolOrchestrationStrategy,
-)
+from mada.core.orchestration.base_strategy import BaseOrchestrationStrategy
 
 if TYPE_CHECKING:
     from mada.core.orchestrator import MADAOrchestrator
@@ -60,7 +58,7 @@ class _InternalResponseReplacement(str):
         return value
 
 
-class MagenticOrchestrationStrategy(AgentAsToolOrchestrationStrategy):
+class MagenticOrchestrationStrategy(BaseOrchestrationStrategy):
     """
     Peer specialist group chat coordinated by a hidden manager agent.
     """

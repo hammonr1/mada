@@ -9,9 +9,11 @@ Tests for the following entry point modules:
 - mada/interface/gradio/main.py -> The `mada-gradio` command.
 """
 
+import asyncio
 import json
 from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -27,6 +29,7 @@ from mada.core.config import (
 )
 from mada.interfaces.a2a.main import (
     MADAA2AService,
+    _resolve_public_a2a_url,
     a2a_entrypoint,
     create_a2a_app,
 )
@@ -977,6 +980,62 @@ class TestMADAA2ACmd:
                 )
 
                 mock_exit.assert_called_once_with(1)
+
+    class TestA2AUrl:
+        def test_default_public_url_uses_loopback_for_wildcard_host(self):
+            assert _resolve_public_a2a_url("0.0.0.0", 8000) == ("http://127.0.0.1:8000")
+
+        def test_default_public_url_preserves_explicit_public_url(self):
+            assert (
+                _resolve_public_a2a_url(
+                    "0.0.0.0",
+                    8000,
+                    "https://mada.example/a2a",
+                )
+                == "https://mada.example/a2a"
+            )
+
+    class TestA2AService:
+        @pytest.mark.asyncio
+        async def test_collect_response_uses_per_request_session(
+            self, create_dummy_config: Callable
+        ):
+            config = create_dummy_config()
+            service = MADAA2AService(
+                config=config,
+                public_url="https://mada.example/a2a",
+            )
+
+            class DummySessionManager:
+                def __init__(self):
+                    self.current_session_id = "original-session"
+                    self.created_sessions = []
+
+                def create_session_id(self):
+                    return "a2a-request-session"
+
+                def create_new_session(self, session_id=None):
+                    self.created_sessions.append(session_id)
+
+            session_manager = DummySessionManager()
+
+            async def collect_message_response(message, isolated_session=False):
+                assert message == "hello"
+                assert isolated_session is True
+                assert session_manager.current_session_id == "a2a-request-session"
+                return "world"
+
+            service.orchestrator = SimpleNamespace(
+                _session_lock=asyncio.Lock(),
+                session_manager=session_manager,
+                collect_message_response=collect_message_response,
+            )
+
+            response = await service.collect_response("hello")
+
+            assert response == "world"
+            assert session_manager.created_sessions == ["a2a-request-session"]
+            assert session_manager.current_session_id == "original-session"
 
     @pytest.mark.skipif(
         TestClient is None, reason="fastapi test client is not installed"
