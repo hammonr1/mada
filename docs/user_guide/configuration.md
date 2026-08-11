@@ -274,8 +274,9 @@ handles outbound calls from MADA to remote A2A agents, while
 
 Use `a2a.agents` when the MADA orchestrator should delegate work to other A2A
 agents. Each configured remote agent is exposed to the planning agent as a tool,
-using the remote agent card for routing context. MADA fails startup if a
-configured remote A2A agent card cannot be fetched.
+using the remote agent card for routing context. If a configured remote A2A
+agent card cannot be fetched, MADA starts without that remote tool and reports
+a warning in the startup status.
 
 #### Fields
 
