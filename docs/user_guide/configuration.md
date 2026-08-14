@@ -83,8 +83,10 @@ MADA includes a special coordinator called the **planning agent**. This coordina
 
 The default, base instructions for the `agent-as-tool` planning agent are:
 
-```python
---8<-- "src/mada/core/orchestrator.py:549:552"
+```
+You are a planning agent for the MADA multi-agent system.
+
+Your specialist agents (available as tools) can be delegated tasks.
 ```
 
 If you'd like to modify the coordinator instructions for either mode, add an agent entry to the `"agents"` list in your configuration file with `"agent_name": "PlanningAgent"`. For example:
@@ -104,8 +106,13 @@ If you'd like to modify the coordinator instructions for either mode, add an age
 
     The `agent-as-tool` planning agent will always include core instructions that cannot be modified. These instructions describe each specialist agent you define, and include the following guidelines:
 
-    ```python
-    --8<-- "src/mada/core/orchestrator.py:561:565"
+    ```
+    Guidelines:
+    - Delegate to specialist agents when the request matches their expertise
+    - Delegate to remote A2A agents when their descriptions match the request
+    - Answer directly only for questions about the system itself
+    - Avoid infinite loops between agents
+    - After receiving results, synthesize and respond to the user
     ```
 
 ## MCP Server Configuration
