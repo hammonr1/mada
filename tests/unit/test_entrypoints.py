@@ -863,12 +863,14 @@ class TestMADAOpenAIApiCmd:
         async def test_stream_response_reports_error_after_partial_content(
             self, create_dummy_config: Callable
         ):
+            from mada.core.orchestration.magentic_strategy import _InternalError
+
             service = MADAOpenAIAPIService(config=create_dummy_config())
 
             async def process_openai_messages(messages):
                 assert messages == [{"role": "user", "content": "hello"}]
                 yield "partial"
-                yield "Error processing message: boom"
+                yield _InternalError("Error processing message: boom")
 
             service.orchestrator = SimpleNamespace(
                 process_openai_messages=process_openai_messages
@@ -1223,7 +1225,7 @@ class TestMADAA2ACmd:
 
     class TestA2AService:
         @pytest.mark.asyncio
-        async def test_collect_response_uses_per_request_session(
+        async def test_collect_response_uses_isolated_session(
             self, create_dummy_config: Callable
         ):
             config = create_dummy_config()
@@ -1232,19 +1234,6 @@ class TestMADAA2ACmd:
                 public_url="https://mada.example/a2a",
             )
 
-            class DummySessionManager:
-                def __init__(self):
-                    self.current_session_id = "original-session"
-                    self.created_sessions = []
-
-                def create_session_id(self):
-                    return "a2a-request-session"
-
-                def create_new_session(self, session_id=None):
-                    self.created_sessions.append(session_id)
-
-            session_manager = DummySessionManager()
-
             async def collect_message_response(
                 message,
                 isolated_session=False,
@@ -1252,22 +1241,17 @@ class TestMADAA2ACmd:
             ):
                 assert message == "hello"
                 assert isolated_session is True
-                assert persistence_session_id == "a2a-request-session"
-                assert session_manager.current_session_id == "original-session"
-                assert service.orchestrator._session_lock.locked() is False
+                # A2A uses stateless isolated sessions, no persistence_session_id
+                assert persistence_session_id is None
                 return "world"
 
             service.orchestrator = SimpleNamespace(
-                _session_lock=asyncio.Lock(),
-                session_manager=session_manager,
                 collect_message_response=collect_message_response,
             )
 
             response = await service.collect_response("hello")
 
             assert response == "world"
-            assert session_manager.created_sessions == ["a2a-request-session"]
-            assert session_manager.current_session_id == "original-session"
 
         @pytest.mark.asyncio
         async def test_stream_response_does_not_append_late_magentic_replacement(
@@ -1279,13 +1263,6 @@ class TestMADAA2ACmd:
                 public_url="https://mada.example/a2a",
             )
 
-            class DummySessionManager:
-                def create_session_id(self):
-                    return "a2a-request-session"
-
-                def create_new_session(self, session_id=None):
-                    return None
-
             async def process_message(
                 message,
                 isolated_session=False,
@@ -1293,18 +1270,19 @@ class TestMADAA2ACmd:
             ):
                 assert message == "hello"
                 assert isolated_session is True
-                assert persistence_session_id == "a2a-request-session"
+                # A2A uses stateless isolated sessions, no persistence_session_id
+                assert persistence_session_id is None
                 yield "stale partial"
                 yield _InternalResponseReplacement("authoritative final")
 
             service.orchestrator = SimpleNamespace(
-                _session_lock=asyncio.Lock(),
-                session_manager=DummySessionManager(),
                 process_message=process_message,
             )
 
             chunks = [chunk async for chunk in service.stream_response("hello")]
 
+            # A2A stream_response only yields content before replacement,
+            # not the replacement itself (sent_content is already True)
             assert chunks == ["stale partial"]
 
         @pytest.mark.asyncio
