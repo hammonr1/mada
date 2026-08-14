@@ -9,7 +9,6 @@ import asyncio
 import inspect
 import json
 import logging
-import re
 import traceback
 from collections.abc import AsyncIterable
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Tuple
@@ -55,6 +54,17 @@ class _InternalResponseReplacement(str):
     def __new__(cls, replacement: str):
         value = str.__new__(cls, "")
         value._mada_response_replacement = replacement
+        return value
+
+
+class _InternalError(str):
+    """
+    Empty stream chunk that signals an internal error condition.
+    """
+
+    def __new__(cls, error_message: str):
+        value = str.__new__(cls, "")
+        value._mada_error_message = error_message
         return value
 
 
@@ -320,34 +330,19 @@ Guidelines:
 
         return False
 
-    _BACKGROUND_TASK_STATUS_PATTERN = re.compile(
-        r"^(?:"
-        r"\[task-[^\]]+\]\s+Started in background\.?"
-        r"|\[[^\]]+\]\s+Started background tool(?:\s+`[^`]+`)?"
-        r"|\[background-task\]\s+Started(?:\s+tool(?:\s+`[^`]+`)?)?"
-        r")$",
-        re.IGNORECASE,
-    )
-
     @classmethod
     def _conversation_history_messages(
         cls,
         history: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """
-        Remove transient background-task status messages but retain completed results.
+        Return conversation history for Magentic workflow context.
+
+        Background task acknowledgments (e.g., "[task-123] Started in background.") are
+        kept so follow-up requests see that work is already in progress. Without these,
+        Magentic can re-run the same long-running tool or respond to the wrong turn.
         """
-        messages = []
-        for message in history:
-            role = str(message.get("role") or "").strip().lower()
-            content = str(message.get("content") or "").strip()
-            # Only filter transient status updates, not completion messages with results
-            is_status_only = role == "assistant" and bool(
-                cls._BACKGROUND_TASK_STATUS_PATTERN.match(content)
-            )
-            if not is_status_only:
-                messages.append(message)
-        return messages
+        return history
 
     @classmethod
     def _contains_tool_call(cls, payload: Any) -> bool:
@@ -389,6 +384,55 @@ Guidelines:
             return any(cls._has_tool_call_payload(item) for item in value)
         return True
 
+    @classmethod
+    def _tool_call_name_from_payload(cls, payload: Any) -> str | None:
+        """
+        Return the MCP function/tool name from a nested Magentic call payload.
+        """
+        if payload is None:
+            return None
+
+        if isinstance(payload, str):
+            return payload.strip() or None
+
+        if isinstance(payload, (list, tuple, set)):
+            for item in payload:
+                if name := cls._tool_call_name_from_payload(item):
+                    return name
+            return None
+
+        if not any(
+            cls._payload_value(payload, key) is not None
+            for key in ("executor_id", "agent_id")
+        ):
+            for key in ("name", "function_name", "tool_name"):
+                value = cls._payload_value(payload, key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        for key in ("function", "tool"):
+            if name := cls._tool_call_name_from_payload(
+                cls._payload_value(payload, key)
+            ):
+                return name
+
+        event_type = cls._event_type(payload)
+        if event_type in {"function_call", "tool_call"} or any(
+            cls._payload_value(payload, key) is not None for key in cls._TOOL_CALL_KEYS
+        ):
+            for key in ("name", "function_name", "tool_name"):
+                value = cls._payload_value(payload, key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        for key in (*cls._TOOL_CALL_KEYS, *cls._TOOL_COLLECTION_KEYS):
+            if name := cls._tool_call_name_from_payload(
+                cls._payload_value(payload, key)
+            ):
+                return name
+
+        return None
+
     @staticmethod
     def _tool_call_signals(
         participant_name: Any,
@@ -419,8 +463,11 @@ Guidelines:
 
         if event_type == "output":
             data = cls._payload_value(event, "data")
-            executor_id = cls._payload_value(data, "executor_id") or cls._payload_value(
-                data, "agent_id"
+            # Executor ID is on event for Agent Framework, or in data for other formats
+            executor_id = (
+                cls._payload_value(event, "executor_id")
+                or cls._payload_value(data, "executor_id")
+                or cls._payload_value(data, "agent_id")
             )
             if (
                 executor_id
@@ -428,14 +475,19 @@ Guidelines:
                 and cls._contains_tool_call(data)
             ):
                 seen_executor_ids.add(executor_id)
-                return cls._tool_call_signals(executor_id)
+                return cls._tool_call_signals(
+                    cls._tool_call_name_from_payload(data) or executor_id
+                )
             return []
 
         if event_type not in {"executor_invoked", "tool_result", "function_result"}:
             return []
 
         data = cls._payload_value(event, "data")
-        executor_id = cls._payload_value(data, "executor_id")
+        # Executor ID is on event for Agent Framework, or in data for other formats
+        executor_id = cls._payload_value(event, "executor_id") or cls._payload_value(
+            data, "executor_id"
+        )
 
         if event_type == "executor_invoked":
             has_tools = any(
@@ -447,7 +499,9 @@ Guidelines:
 
         if executor_id and executor_id not in seen_executor_ids:
             seen_executor_ids.add(executor_id)
-            return cls._tool_call_signals(executor_id)
+            return cls._tool_call_signals(
+                cls._tool_call_name_from_payload(data) or executor_id
+            )
         return []
 
     @classmethod
@@ -601,7 +655,8 @@ Guidelines:
         """
         Build a concise user-facing acknowledgement when no final text is available.
 
-        Format matches _BACKGROUND_TASK_STATUS_PATTERN so history filtering removes it.
+        Format matches what BackgroundTasks and Gradio persistence checks expect.
+        Kept in conversation history so follow-up requests see work is in progress.
         """
         if not descriptors:
             return ""
@@ -609,13 +664,12 @@ Guidelines:
         try:
             descriptor = json.loads(descriptors[0])
         except json.JSONDecodeError:
-            return "[background-task] Started"
+            return "Started in background."
 
         task_id = descriptor.get("task_id")
-        tool_name = descriptor.get("tool_name", "background_tool")
         if task_id:
-            return f"[{task_id}] Started background tool `{tool_name}`"
-        return f"[background-task] Started tool `{tool_name}`"
+            return f"[{task_id}] Started in background."
+        return "Started in background."
 
     async def _iter_result_events(
         self,
@@ -745,17 +799,13 @@ Guidelines:
             if chunk:
                 yield "chunk", chunk
 
-        # Background task ack takes precedence over partial streamed text
         bg_ack = self._background_task_ack(background_task_descriptors)
-        if bg_ack:
-            main_output = bg_ack
-        else:
-            main_output = final_text or streamed_text
+        main_output = final_text or streamed_text or bg_ack
 
         # Stream delta/replacement if main_output differs from streamed
         if main_output and main_output != streamed_text:
-            if bg_ack:
-                # Background task ack replaces streamed text
+            if bg_ack and main_output == bg_ack:
+                # Background task ack is a fallback when no final text is available.
                 yield "chunk", _InternalResponseReplacement(main_output)
             elif final_text and final_text.startswith(streamed_text):
                 # Final text extends streamed - yield delta only
@@ -840,6 +890,12 @@ Guidelines:
     ) -> AsyncGenerator[str, None]:
         """
         Process OpenAI-style chat messages through a fresh Magentic workflow.
+
+        Streams chunks incrementally as they arrive from Magentic. Uses structured
+        markers (_InternalResponseReplacement, _InternalError) for replacements
+        and errors rather than string-prefix detection, allowing normal model
+        output to contain phrases like "Error processing message:" without being
+        misinterpreted as internal signals.
         """
         if not orchestrator.manager_agent:
             yield "Error: Orchestrator not initialized."
@@ -855,39 +911,46 @@ Guidelines:
                 include_tool_notices=False,
             ):
                 if kind == "chunk":
-                    streamed_text += value
+                    replacement_text = getattr(
+                        value, "_mada_response_replacement", None
+                    )
+                    if replacement_text is not None:
+                        streamed_text = str(replacement_text)
+                    else:
+                        streamed_text += value
                     yield value
                 elif kind == "final":
                     final_text = value
                 elif kind == "background_task":
                     continue
 
-            # If final differs from streamed, yield the authoritative final text
-            if final_text and final_text != streamed_text:
-                # Check if it's a response replacement signal
-                if isinstance(final_text, _InternalResponseReplacement):
-                    yield final_text._mada_response_replacement
-                elif not final_text.startswith(streamed_text):
-                    # Complete replacement - yield the whole final text
-                    yield final_text
-                else:
-                    # Extension - yield only the delta
-                    delta = final_text[len(streamed_text) :]
+            final_replacement = getattr(final_text, "_mada_response_replacement", None)
+            final_output = (
+                str(final_replacement)
+                if final_replacement is not None
+                else (final_text or streamed_text)
+            )
+            if final_output and final_output != streamed_text:
+                if final_output.startswith(streamed_text):
+                    delta = final_output[len(streamed_text) :]
                     if delta:
                         yield delta
-            elif not final_text:
+                else:
+                    yield _InternalResponseReplacement(final_output)
+            elif not final_output:
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)
             traceback.print_exc()
-            yield error_msg
+            yield _InternalError(error_msg)
 
     async def process_message(
         self,
         orchestrator: "MADAOrchestrator",
         message: str,
         isolated_session: bool = False,
+        persistence_session_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message through a fresh Magentic workflow.
@@ -897,7 +960,6 @@ Guidelines:
             return
 
         try:
-            streamed_response = False
             background_task_descriptors = []
             turn_id = None
             streamed_text = ""
@@ -905,7 +967,12 @@ Guidelines:
             # Load history inside lock for non-isolated sessions to ensure atomicity
             # between turn_id reservation and history snapshot
             if isolated_session:
-                history = orchestrator.session_manager.load_history()
+                if persistence_session_id is None:
+                    history = orchestrator.session_manager.load_history()
+                else:
+                    history = await orchestrator._load_history_for_session(
+                        persistence_session_id
+                    )
             else:
                 async with orchestrator._session_lock:
                     turn_id = orchestrator._next_turn_id
@@ -926,19 +993,26 @@ Guidelines:
                 if kind == "notice":
                     yield value
                 elif kind == "chunk":
-                    streamed_response = True
-                    streamed_text += value
-                    yield value
+                    replacement_text = getattr(
+                        value, "_mada_response_replacement", None
+                    )
+                    if replacement_text is not None:
+                        streamed_text = str(replacement_text)
+                        yield value
+                    else:
+                        streamed_text += value
+                        yield value
                 elif kind == "final":
                     aggregated_assistant_reply = value
                 elif kind == "background_task":
                     background_task_descriptors.append(value)
 
             if isolated_session:
-                orchestrator._persist_isolated_response(
+                await orchestrator._persist_isolated_response(
                     message,
                     aggregated_assistant_reply,
                     background_task_descriptors=background_task_descriptors,
+                    session_id=persistence_session_id,
                 )
             else:
                 await orchestrator._commit_completed_turn(
@@ -950,16 +1024,15 @@ Guidelines:
                     background_task_descriptors=background_task_descriptors,
                 )
 
-            if aggregated_assistant_reply.strip() and not streamed_response:
-                yield aggregated_assistant_reply
-            elif (
-                aggregated_assistant_reply.strip()
-                and streamed_text
-                and aggregated_assistant_reply != streamed_text
-                and not aggregated_assistant_reply.startswith(streamed_text)
-            ):
-                yield _InternalResponseReplacement(aggregated_assistant_reply)
-            elif not aggregated_assistant_reply.strip():
+            output = aggregated_assistant_reply or streamed_text
+            if output.strip() and output != streamed_text:
+                if output.startswith(streamed_text):
+                    delta = output[len(streamed_text) :]
+                    if delta:
+                        yield delta
+                else:
+                    yield _InternalResponseReplacement(output)
+            elif not output.strip():
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
             if turn_id is not None:
@@ -970,4 +1043,4 @@ Guidelines:
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)
             traceback.print_exc()
-            yield error_msg
+            yield _InternalError(error_msg)

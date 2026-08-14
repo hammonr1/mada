@@ -27,6 +27,9 @@ from mada.core.config import (
     OrchestrationConfig,
     SQLiteConfig,
 )
+from mada.core.orchestration.magentic_strategy import (
+    _InternalResponseReplacement,
+)
 from mada.interfaces.a2a.main import (
     MADAA2AService,
     _resolve_public_a2a_url,
@@ -708,6 +711,226 @@ class TestMADAOpenAIApiCmd:
                 )
                 assert "unsupported orchestration mode: magentic" in printed
 
+    class TestOpenAIApiService:
+        @pytest.mark.asyncio
+        async def test_collect_response_replaces_stale_magentic_chunks(
+            self, create_dummy_config: Callable
+        ):
+            service = MADAOpenAIAPIService(config=create_dummy_config())
+
+            async def process_openai_messages(messages):
+                assert messages == [{"role": "user", "content": "hello"}]
+                yield "stale partial"
+                yield _InternalResponseReplacement("authoritative final")
+
+            service.orchestrator = SimpleNamespace(
+                process_openai_messages=process_openai_messages
+            )
+
+            response = await service.collect_response(
+                [{"role": "user", "content": "hello"}]
+            )
+
+            assert response == "authoritative final"
+
+        @pytest.mark.asyncio
+        async def test_stream_response_emits_content_incrementally(
+            self, create_dummy_config: Callable
+        ):
+            service = MADAOpenAIAPIService(config=create_dummy_config())
+            never_finish = asyncio.Event()
+
+            async def process_openai_messages(messages):
+                assert messages == [{"role": "user", "content": "hello"}]
+                yield "first chunk"
+                await never_finish.wait()
+
+            service.orchestrator = SimpleNamespace(
+                process_openai_messages=process_openai_messages
+            )
+
+            stream = service.stream_response([{"role": "user", "content": "hello"}])
+            await anext(stream)
+            content_event = await asyncio.wait_for(anext(stream), timeout=1)
+            await stream.aclose()
+
+            payload = json.loads(content_event.removeprefix("data: "))
+            assert payload["choices"][0]["delta"]["content"] == "first chunk"
+
+        @pytest.mark.asyncio
+        async def test_stream_response_emits_replacement_before_content(
+            self, create_dummy_config: Callable
+        ):
+            service = MADAOpenAIAPIService(config=create_dummy_config())
+
+            async def process_openai_messages(messages):
+                assert messages == [{"role": "user", "content": "hello"}]
+                yield _InternalResponseReplacement("authoritative final")
+
+            service.orchestrator = SimpleNamespace(
+                process_openai_messages=process_openai_messages
+            )
+
+            events = [
+                event
+                async for event in service.stream_response(
+                    [{"role": "user", "content": "hello"}]
+                )
+            ]
+            payloads = [
+                json.loads(event.removeprefix("data: "))
+                for event in events
+                if event.startswith("data: {")
+            ]
+            content = "".join(
+                [
+                    payload["choices"][0]["delta"].get("content", "")
+                    for payload in payloads
+                ]
+            )
+
+            assert content == "authoritative final"
+
+        @pytest.mark.asyncio
+        async def test_stream_response_emits_authoritative_magentic_content(
+            self, create_dummy_config: Callable
+        ):
+            service = MADAOpenAIAPIService(config=create_dummy_config())
+
+            async def process_openai_messages(messages):
+                assert messages == [{"role": "user", "content": "hello"}]
+                yield "authoritative final"
+
+            service.orchestrator = SimpleNamespace(
+                process_openai_messages=process_openai_messages
+            )
+
+            events = [
+                event
+                async for event in service.stream_response(
+                    [{"role": "user", "content": "hello"}]
+                )
+            ]
+            payloads = [
+                json.loads(event.removeprefix("data: "))
+                for event in events
+                if event.startswith("data: {")
+            ]
+            content = "".join(
+                payload["choices"][0]["delta"].get("content", "")
+                for payload in payloads
+                if "choices" in payload
+            )
+            errors = [payload["error"] for payload in payloads if "error" in payload]
+
+            assert content == "authoritative final"
+            assert errors == []
+
+        @pytest.mark.asyncio
+        async def test_stream_response_emits_clean_error_content(
+            self, create_dummy_config: Callable
+        ):
+            service = MADAOpenAIAPIService(config=create_dummy_config())
+
+            async def process_openai_messages(messages):
+                assert messages == [{"role": "user", "content": "hello"}]
+                yield "Error processing message: boom"
+
+            service.orchestrator = SimpleNamespace(
+                process_openai_messages=process_openai_messages
+            )
+
+            events = [
+                event
+                async for event in service.stream_response(
+                    [{"role": "user", "content": "hello"}]
+                )
+            ]
+            payloads = [
+                json.loads(event.removeprefix("data: "))
+                for event in events
+                if event.startswith("data: {")
+            ]
+            content = "".join(
+                payload["choices"][0]["delta"].get("content", "")
+                for payload in payloads
+                if "choices" in payload
+            )
+
+            assert content == "Error processing message: boom"
+
+        @pytest.mark.asyncio
+        async def test_stream_response_reports_error_after_partial_content(
+            self, create_dummy_config: Callable
+        ):
+            service = MADAOpenAIAPIService(config=create_dummy_config())
+
+            async def process_openai_messages(messages):
+                assert messages == [{"role": "user", "content": "hello"}]
+                yield "partial"
+                yield "Error processing message: boom"
+
+            service.orchestrator = SimpleNamespace(
+                process_openai_messages=process_openai_messages
+            )
+
+            events = [
+                event
+                async for event in service.stream_response(
+                    [{"role": "user", "content": "hello"}]
+                )
+            ]
+            payloads = [
+                json.loads(event.removeprefix("data: "))
+                for event in events
+                if event.startswith("data: {")
+            ]
+            content = "".join(
+                payload["choices"][0]["delta"].get("content", "")
+                for payload in payloads
+                if "choices" in payload
+            )
+            errors = [payload["error"] for payload in payloads if "error" in payload]
+
+            assert content == "partial"
+            assert errors[0]["code"] == "stream_error"
+
+        @pytest.mark.asyncio
+        async def test_stream_response_reports_late_replacement_error(
+            self, create_dummy_config: Callable
+        ):
+            service = MADAOpenAIAPIService(config=create_dummy_config())
+
+            async def process_openai_messages(messages):
+                assert messages == [{"role": "user", "content": "hello"}]
+                yield "partial"
+                yield _InternalResponseReplacement("authoritative final")
+
+            service.orchestrator = SimpleNamespace(
+                process_openai_messages=process_openai_messages
+            )
+
+            events = [
+                event
+                async for event in service.stream_response(
+                    [{"role": "user", "content": "hello"}]
+                )
+            ]
+            payloads = [
+                json.loads(event.removeprefix("data: "))
+                for event in events
+                if event.startswith("data: {")
+            ]
+            content = "".join(
+                payload["choices"][0]["delta"].get("content", "")
+                for payload in payloads
+                if "choices" in payload
+            )
+            errors = [payload["error"] for payload in payloads if "error" in payload]
+
+            assert content == "partial"
+            assert errors[0]["code"] == "late_response_replacement"
+
     @pytest.mark.skipif(
         TestClient is None, reason="fastapi test client is not installed"
     )
@@ -985,6 +1208,9 @@ class TestMADAA2ACmd:
         def test_default_public_url_uses_loopback_for_wildcard_host(self):
             assert _resolve_public_a2a_url("0.0.0.0", 8000) == ("http://127.0.0.1:8000")
 
+        def test_default_public_url_uses_ipv6_loopback_for_ipv6_wildcard_host(self):
+            assert _resolve_public_a2a_url("::", 8000) == "http://[::1]:8000"
+
         def test_default_public_url_preserves_explicit_public_url(self):
             assert (
                 _resolve_public_a2a_url(
@@ -1019,10 +1245,16 @@ class TestMADAA2ACmd:
 
             session_manager = DummySessionManager()
 
-            async def collect_message_response(message, isolated_session=False):
+            async def collect_message_response(
+                message,
+                isolated_session=False,
+                persistence_session_id=None,
+            ):
                 assert message == "hello"
                 assert isolated_session is True
-                assert session_manager.current_session_id == "a2a-request-session"
+                assert persistence_session_id == "a2a-request-session"
+                assert session_manager.current_session_id == "original-session"
+                assert service.orchestrator._session_lock.locked() is False
                 return "world"
 
             service.orchestrator = SimpleNamespace(
@@ -1036,6 +1268,83 @@ class TestMADAA2ACmd:
             assert response == "world"
             assert session_manager.created_sessions == ["a2a-request-session"]
             assert session_manager.current_session_id == "original-session"
+
+        @pytest.mark.asyncio
+        async def test_stream_response_does_not_append_late_magentic_replacement(
+            self, create_dummy_config: Callable
+        ):
+            config = create_dummy_config()
+            service = MADAA2AService(
+                config=config,
+                public_url="https://mada.example/a2a",
+            )
+
+            class DummySessionManager:
+                def create_session_id(self):
+                    return "a2a-request-session"
+
+                def create_new_session(self, session_id=None):
+                    return None
+
+            async def process_message(
+                message,
+                isolated_session=False,
+                persistence_session_id=None,
+            ):
+                assert message == "hello"
+                assert isolated_session is True
+                assert persistence_session_id == "a2a-request-session"
+                yield "stale partial"
+                yield _InternalResponseReplacement("authoritative final")
+
+            service.orchestrator = SimpleNamespace(
+                _session_lock=asyncio.Lock(),
+                session_manager=DummySessionManager(),
+                process_message=process_message,
+            )
+
+            chunks = [chunk async for chunk in service.stream_response("hello")]
+
+            assert chunks == ["stale partial"]
+
+        @pytest.mark.asyncio
+        async def test_stream_response_yields_incremental_a2a_content(
+            self, create_dummy_config: Callable
+        ):
+            service = MADAA2AService(
+                config=create_dummy_config(),
+                public_url="https://mada.example/a2a",
+            )
+            never_finish = asyncio.Event()
+
+            class DummySessionManager:
+                def create_session_id(self):
+                    return "a2a-request-session"
+
+                def create_new_session(self, session_id=None):
+                    return None
+
+            async def process_message(
+                message,
+                isolated_session=False,
+                persistence_session_id=None,
+            ):
+                assert message == "hello"
+                yield "first"
+                yield " second"
+                await never_finish.wait()
+
+            service.orchestrator = SimpleNamespace(
+                _session_lock=asyncio.Lock(),
+                session_manager=DummySessionManager(),
+                process_message=process_message,
+            )
+
+            stream = service.stream_response("hello")
+            first_event = await asyncio.wait_for(anext(stream), timeout=1)
+            await stream.aclose()
+
+            assert first_event == "first"
 
     @pytest.mark.skipif(
         TestClient is None, reason="fastapi test client is not installed"

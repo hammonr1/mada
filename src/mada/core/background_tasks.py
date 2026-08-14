@@ -48,6 +48,15 @@ def _parse_background_task_descriptor_payload(value: str) -> Any | None:
     return None
 
 
+def is_background_task_start_ack(content: str) -> bool:
+    """
+    Return whether text is a background-task start acknowledgement.
+    """
+    return content.startswith("[task-") and (
+        "Started in background." in content or "Started background tool" in content
+    )
+
+
 class BackgroundTaskManager:
     """
     Manage interface background queries and MCP server-side background tools.
@@ -165,8 +174,8 @@ class BackgroundTaskManager:
             if next_entry.get("role") != "assistant":
                 continue
             content = next_entry.get("content", "")
-            if isinstance(content, str) and content.startswith("[task-"):
-                return "Started in background." in content
+            if isinstance(content, str) and is_background_task_start_ack(content):
+                return True
 
         return False
 

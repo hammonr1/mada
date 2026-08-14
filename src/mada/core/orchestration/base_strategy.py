@@ -71,6 +71,17 @@ class BaseOrchestrationStrategy(ABC):
                 )
                 continue
 
+            if config.mcp_servers:
+                if not orchestrator.mcp_servers:
+                    LOG.error(
+                        "Agent %s references MCP servers but no named MCP server "
+                        "definitions were loaded: %s",
+                        config.agent_name,
+                        ", ".join(config.mcp_servers),
+                    )
+                    failed_agents.append(config.agent_name)
+                    continue
+
             if not config.mcp_servers:
                 await self._connect_agent_without_tools(
                     orchestrator, config, failed_agents
@@ -294,6 +305,7 @@ class BaseOrchestrationStrategy(ABC):
         orchestrator: "MADAOrchestrator",
         message: str,
         isolated_session: bool = False,
+        persistence_session_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Process one interactive user message for this orchestration mode.

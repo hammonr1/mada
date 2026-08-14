@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import secrets
 import sys
 import time
 import uuid
-import secrets
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional
 
@@ -37,6 +38,8 @@ except (
 else:
     FASTAPI_IMPORT_ERROR = None
 
+LOG = logging.getLogger(__name__)
+
 try:
     import uvicorn
 except (
@@ -47,8 +50,8 @@ except (
 else:
     UVICORN_IMPORT_ERROR = None
 
-from mada.core.config import AppConfig, OrchestrationConfig
-from mada.core import load_config_from_json
+from mada.core import load_config_from_json  # noqa: E402
+from mada.core.config import AppConfig, OrchestrationConfig  # noqa: E402
 
 if TYPE_CHECKING:
     from mada.core.orchestrator import MADAOrchestrator
@@ -287,7 +290,17 @@ class MADAOpenAIAPIService:
 
         chunks = []
         async for chunk in self.orchestrator.process_openai_messages(messages):
-            chunks.append(chunk)
+            replacement = getattr(chunk, "_mada_response_replacement", None)
+            if replacement is not None:
+                chunks = [str(replacement)]
+                continue
+            error_msg = getattr(chunk, "_mada_error_message", None)
+            if error_msg is not None:
+                # Error replaces all prior content
+                chunks = [str(error_msg)]
+                continue
+            content = str(chunk)
+            chunks.append(content)
         return "".join(chunks)
 
     async def stream_response(
@@ -295,6 +308,17 @@ class MADAOpenAIAPIService:
     ) -> AsyncGenerator[str, None]:
         """
         Yield OpenAI-compatible SSE events for a streaming response.
+
+        OpenAI SSE protocol is append-only: once content is streamed to the client,
+        it cannot be retracted or replaced. If Magentic produces an authoritative
+        replacement after content has already been sent, we detect this conflict
+        and emit a structured error event rather than silently appending the
+        replacement (which would produce corrupt concatenated output).
+
+        To avoid late replacements in Magentic, ensure that provisional/incremental
+        outputs are clearly marked and that final authoritative outputs arrive
+        before streaming begins or as proper deltas that extend (not replace)
+        what was already sent.
 
         Args:
             messages: OpenAI-style chat messages from the HTTP request body.
@@ -323,17 +347,63 @@ class MADAOpenAIAPIService:
         }
         yield f"data: {json.dumps(initial)}\n\n"
 
-        async for chunk in self.orchestrator.process_openai_messages(messages):
+        def emit_content(text: str) -> str:
             payload = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": self.model_name,
                 "choices": [
-                    {"index": 0, "delta": {"content": chunk}, "finish_reason": None}
+                    {"index": 0, "delta": {"content": text}, "finish_reason": None}
                 ],
             }
-            yield f"data: {json.dumps(payload)}\n\n"
+            return f"data: {json.dumps(payload)}\n\n"
+
+        sent_content = False
+        async for chunk in self.orchestrator.process_openai_messages(messages):
+            replacement = getattr(chunk, "_mada_response_replacement", None)
+            if replacement is not None:
+                if sent_content:
+                    message = (
+                        "MADA produced an authoritative replacement after content "
+                        "was already streamed; OpenAI chat deltas are append-only."
+                    )
+                    LOG.warning(
+                        "%s Replacement was not appended to avoid corrupt output.",
+                        message,
+                    )
+                    error = {
+                        "error": {
+                            "message": message,
+                            "type": "server_error",
+                            "code": "late_response_replacement",
+                        }
+                    }
+                    yield f"data: {json.dumps(error)}\n\n"
+                    return
+                else:
+                    yield emit_content(str(replacement))
+                sent_content = True
+                continue
+
+            error_msg = getattr(chunk, "_mada_error_message", None)
+            if error_msg is not None:
+                error = {
+                    "error": {
+                        "message": str(error_msg),
+                        "type": "server_error",
+                        "code": "stream_error",
+                    }
+                }
+                yield f"data: {json.dumps(error)}\n\n"
+                return
+
+            content = str(chunk)
+            if not content:
+                continue
+
+            sent_content = True
+            yield emit_content(content)
 
         final = {
             "id": completion_id,

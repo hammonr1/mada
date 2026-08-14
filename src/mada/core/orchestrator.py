@@ -911,12 +911,16 @@ Guidelines:
         self,
         message: str,
         isolated_session: bool = False,
+        persistence_session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message using the configured strategy.
         """
         async for chunk in self.orchestration_strategy.process_message(
-            self, message, isolated_session=isolated_session
+            self,
+            message,
+            isolated_session=isolated_session,
+            persistence_session_id=persistence_session_id,
         ):
             yield chunk
 
@@ -1004,6 +1008,24 @@ Guidelines:
 
         return turn_id, run_session, history_lengths
 
+    async def _load_history_for_session(self, session_id: str) -> List[Dict]:
+        """
+        Load chat history for a specific persisted session.
+
+        Args:
+            session_id: Chat session ID to read.
+
+        Returns:
+            Stored chat history for the session.
+        """
+        async with self._session_lock:
+            previous_session_id = self.session_manager.current_session_id
+            self.session_manager.current_session_id = session_id
+            try:
+                return self.session_manager.load_history()
+            finally:
+                self.session_manager.current_session_id = previous_session_id
+
     @staticmethod
     def _provider_message_lengths(session: AgentSession) -> Dict[str, int]:
         """
@@ -1023,11 +1045,12 @@ Guidelines:
                 history_lengths[provider_name] = len(provider_state["messages"])
         return history_lengths
 
-    def _persist_isolated_response(
+    async def _persist_isolated_response(
         self,
         message: str,
         assistant_reply: str,
         background_task_descriptors: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
     ) -> None:
         """
         Persist a response produced from an isolated agent session.
@@ -1038,6 +1061,8 @@ Guidelines:
             background_task_descriptors: Optional hidden MCP background task
                 descriptors that should start polling but not be stored as
                 assistant-visible text.
+            session_id: Optional chat session that should receive the isolated
+                turn. When omitted, the current session is used.
 
         Returns:
             None.
@@ -1045,6 +1070,20 @@ Guidelines:
         Raises:
             Exception: Propagates database persistence failures.
         """
+        if session_id is not None:
+            async with self._session_lock:
+                previous_session_id = self.session_manager.current_session_id
+                self.session_manager.current_session_id = session_id
+                try:
+                    await self._persist_isolated_response(
+                        message,
+                        assistant_reply,
+                        background_task_descriptors=background_task_descriptors,
+                    )
+                finally:
+                    self.session_manager.current_session_id = previous_session_id
+            return
+
         if not self.background_tasks.user_message_already_started_background_task(
             message
         ):
@@ -1223,6 +1262,7 @@ Guidelines:
         self,
         message: str,
         isolated_session: bool = False,
+        persistence_session_id: Optional[str] = None,
         first_tool_call: Optional[asyncio.Event] = None,
         first_tool_state: Optional[Dict[str, str]] = None,
     ) -> str:
@@ -1240,6 +1280,8 @@ Guidelines:
                 provider-specific state beyond messages, and an overlapping turn
                 cannot include another unfinished turn's eventual result in its
                 context.
+            persistence_session_id: Optional chat session where isolated
+                request output should be persisted.
             first_tool_call: Optional event set when the streamed response first
                 reports a tool call.
             first_tool_state: Optional mutable mapping populated with the first
@@ -1256,6 +1298,7 @@ Guidelines:
         async for response_chunk in self.process_message(
             message,
             isolated_session=isolated_session,
+            persistence_session_id=persistence_session_id,
         ):
             internal_tool_call_name = getattr(
                 response_chunk,

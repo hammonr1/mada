@@ -290,47 +290,47 @@ class MADAA2AService:
     async def collect_response(self, message: str) -> str:
         """
         Collect a complete orchestrator response for a single A2A message.
+
+        Uses isolated sessions to avoid interference with the main orchestrator
+        session, but does not persist conversation history across A2A requests
+        by design (A2A protocol is stateless per-request).
         """
         if self.orchestrator is None:
             raise RuntimeError("Orchestrator not initialized")
-        async with self._request_session():
-            return await self.orchestrator.collect_message_response(
-                message,
-                isolated_session=True,
-            )
+        return await self.orchestrator.collect_message_response(
+            message,
+            isolated_session=True,
+        )
 
     async def stream_response(self, message: str) -> AsyncGenerator[str, None]:
         """
         Stream orchestrator response chunks for a single A2A message.
+
+        Uses isolated sessions to avoid interference with the main orchestrator
+        session, but does not persist conversation history across A2A requests
+        by design (A2A protocol is stateless per-request).
         """
         if self.orchestrator is None:
             raise RuntimeError("Orchestrator not initialized")
 
-        async with self._request_session():
-            async for chunk in self.orchestrator.process_message(
-                message,
-                isolated_session=True,
-            ):
-                yield chunk
+        sent_content = False
+        async for chunk in self.orchestrator.process_message(
+            message,
+            isolated_session=True,
+        ):
+            replacement = getattr(chunk, "_mada_response_replacement", None)
+            if replacement is not None:
+                if not sent_content:
+                    content = str(replacement)
+                    if content:
+                        sent_content = True
+                        yield content
+                continue
 
-    @asynccontextmanager
-    async def _request_session(self):
-        """
-        Persist one A2A request under its own chat session.
-        """
-        if self.orchestrator is None:
-            raise RuntimeError("Orchestrator not initialized")
-
-        session_manager = self.orchestrator.session_manager
-        async with self.orchestrator._session_lock:
-            previous_session_id = session_manager.current_session_id
-            request_session_id = session_manager.create_session_id()
-            session_manager.current_session_id = request_session_id
-            session_manager.create_new_session(request_session_id)
-            try:
-                yield
-            finally:
-                session_manager.current_session_id = previous_session_id
+            content = str(chunk)
+            if content:
+                sent_content = True
+                yield content
 
 
 def _extract_message_text(value: Any) -> str:
@@ -525,7 +525,7 @@ def _resolve_public_a2a_url(
     """
     if public_url:
         return public_url
-    advertised_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    advertised_host = {"0.0.0.0": "127.0.0.1", "::": "[::1]"}.get(host, host)
     return f"http://{advertised_host}:{port}"
 
 

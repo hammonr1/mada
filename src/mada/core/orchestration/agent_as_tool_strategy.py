@@ -192,6 +192,7 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         orchestrator: "MADAOrchestrator",
         message: str,
         isolated_session: bool = False,
+        persistence_session_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message through the planning agent.
@@ -229,10 +230,11 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                 LOG.warning("No text chunks received from planning agent")
 
             if isolated_session:
-                orchestrator._persist_isolated_response(
+                await orchestrator._persist_isolated_response(
                     message,
                     aggregated_assistant_reply,
                     background_task_descriptors=background_task_descriptors,
+                    session_id=persistence_session_id,
                 )
                 return
 
