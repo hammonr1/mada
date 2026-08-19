@@ -52,6 +52,12 @@ else:
 
 from mada.core import load_config_from_json  # noqa: E402
 from mada.core.config import AppConfig, OrchestrationConfig  # noqa: E402
+from mada.core.orchestration.stream_events import (  # noqa: E402
+    apply_text_control,
+    error_message,
+    response_replacement,
+)
+from mada.interfaces.startup_errors import format_startup_error_message  # noqa: E402
 
 if TYPE_CHECKING:
     from mada.core.orchestrator import MADAOrchestrator
@@ -72,33 +78,6 @@ class OrchestratorStartupError(RuntimeError):
     connection problems, into a stable error type that the FastAPI layer can map
     to a `503 Service Unavailable` response.
     """
-
-
-def _format_startup_error_message(exc: BaseException) -> str:
-    """
-    Convert orchestrator startup failures into a concise user-facing message.
-
-    The most common failure mode here is unreachable MCP infrastructure. Keep the
-    message short and actionable so API clients get something they can surface.
-
-    Args:
-        exc: The original exception raised while starting the orchestrator.
-
-    Returns:
-        A user-facing error message suitable for inclusion in an HTTP error
-        response body.
-    """
-    details = str(exc).strip() or exc.__class__.__name__
-    lowered = details.lower()
-
-    if "connect" in lowered or "connection" in lowered or "cancellederror" in lowered:
-        return (
-            "MADA could not connect to one or more MCP servers. "
-            "Check the MCP server processes and the URLs/commands in your config. "
-            f"Details: {details}"
-        )
-
-    return f"MADA failed to initialize the configured agent team. Details: {details}"
 
 
 def _require_fastapi() -> None:
@@ -207,7 +186,7 @@ class MADAOpenAIAPIService:
                 await orchestrator.__aexit__(None, None, None)
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
-            raise OrchestratorStartupError(_format_startup_error_message(exc)) from exc
+            raise OrchestratorStartupError(format_startup_error_message(exc)) from exc
 
     async def ensure_started(self) -> None:
         """
@@ -288,16 +267,12 @@ class MADAOpenAIAPIService:
         if self.orchestrator is None:
             raise RuntimeError("Orchestrator not initialized")
 
-        chunks = []
+        chunks: list[str] = []
         async for chunk in self.orchestrator.process_openai_messages(messages):
-            replacement = getattr(chunk, "_mada_response_replacement", None)
-            if replacement is not None:
-                chunks = [str(replacement)]
-                continue
-            error_msg = getattr(chunk, "_mada_error_message", None)
-            if error_msg is not None:
-                # Error replaces all prior content
-                chunks = [str(error_msg)]
+            handled, terminal = apply_text_control(chunks, chunk)
+            if handled:
+                if terminal:
+                    break
                 continue
             content = str(chunk)
             chunks.append(content)
@@ -309,16 +284,13 @@ class MADAOpenAIAPIService:
         """
         Yield OpenAI-compatible SSE events for a streaming response.
 
-        OpenAI SSE protocol is append-only: once content is streamed to the client,
-        it cannot be retracted or replaced. If Magentic produces an authoritative
-        replacement after content has already been sent, we detect this conflict
-        and emit a structured error event rather than silently appending the
-        replacement (which would produce corrupt concatenated output).
-
-        To avoid late replacements in Magentic, ensure that provisional/incremental
-        outputs are clearly marked and that final authoritative outputs arrive
-        before streaming begins or as proper deltas that extend (not replace)
-        what was already sent.
+        Magentic orchestration can emit provisional text followed by authoritative
+        replacements, but OpenAI SSE protocol is append-only (cannot retract content).
+        To preserve correct output in Magentic mode while maintaining incremental
+        streaming for other modes, this method:
+        - Buffers content in Magentic mode (sacrifices incremental streaming for
+          correctness when replacements occur)
+        - Streams immediately in agent-as-tool mode (preserves incremental streaming)
 
         Args:
             messages: OpenAI-style chat messages from the HTTP request body.
@@ -359,58 +331,70 @@ class MADAOpenAIAPIService:
             }
             return f"data: {json.dumps(payload)}\n\n"
 
-        sent_content = False
+        # Check if we're in Magentic mode (which can produce replacements)
+        orchestration_config = _get_orchestration_config(self.config)
+        is_magentic = orchestration_config.mode == "magentic"
+
+        # In Magentic mode, buffer to handle replacements correctly.
+        # In other modes, stream immediately for incremental delivery.
+        buffered_text = ""
+
         async for chunk in self.orchestrator.process_openai_messages(messages):
-            replacement = getattr(chunk, "_mada_response_replacement", None)
+            replacement = response_replacement(chunk)
             if replacement is not None:
-                if sent_content:
-                    message = (
-                        "MADA produced an authoritative replacement after content "
-                        "was already streamed; OpenAI chat deltas are append-only."
-                    )
-                    LOG.warning(
-                        "%s Replacement was not appended to avoid corrupt output.",
-                        message,
-                    )
-                    error = {
-                        "error": {
-                            "message": message,
-                            "type": "server_error",
-                            "code": "late_response_replacement",
-                        }
-                    }
-                    yield f"data: {json.dumps(error)}\n\n"
-                    return
-                else:
-                    yield emit_content(str(replacement))
-                sent_content = True
+                buffered_text = replacement
                 continue
 
-            error_msg = getattr(chunk, "_mada_error_message", None)
+            error_msg = error_message(chunk)
             if error_msg is not None:
-                error = {
-                    "error": {
-                        "message": str(error_msg),
-                        "type": "server_error",
-                        "code": "stream_error",
-                    }
+                if buffered_text:
+                    yield emit_content(buffered_text)
+                    buffered_text = ""
+
+                error_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": self.model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": f"\n\n[Error: {error_msg}]"},
+                            "finish_reason": None,
+                        }
+                    ],
                 }
-                yield f"data: {json.dumps(error)}\n\n"
-                return
+                yield f"data: {json.dumps(error_chunk)}\n\n"
+                break
 
             content = str(chunk)
             if not content:
                 continue
 
-            sent_content = True
-            yield emit_content(content)
+            if is_magentic:
+                # Buffer content in Magentic mode
+                buffered_text += content
+            else:
+                # Stream immediately in non-Magentic modes
+                yield emit_content(content)
 
+        # Stream any remaining buffered content (Magentic mode final output)
+        if buffered_text:
+            yield emit_content(buffered_text)
+
+        # Always send normal completion markers
         final = {
             "id": completion_id,
             "object": "chat.completion.chunk",
             "created": created,
             "model": self.model_name,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }
+            ],
         }
         yield f"data: {json.dumps(final)}\n\n"
         yield "data: [DONE]\n\n"

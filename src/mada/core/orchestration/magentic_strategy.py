@@ -17,6 +17,12 @@ from agent_framework import Agent, Message
 
 from mada.core.config import AgentConfig, MCPServerConfig, RemoteA2AAgentConfig
 from mada.core.orchestration.base_strategy import BaseOrchestrationStrategy
+from mada.core.orchestration.stream_events import (
+    InternalError,
+    InternalResponseReplacement,
+    InternalToolCallSignal,
+    response_replacement,
+)
 
 if TYPE_CHECKING:
     from mada.core.orchestrator import MADAOrchestrator
@@ -33,39 +39,6 @@ except ImportError:  # pragma: no cover - depends on installed agent framework v
 
 
 LOG = logging.getLogger(__name__)
-
-
-class _InternalToolCallSignal(str):
-    """
-    Empty stream chunk that carries background-detach metadata.
-    """
-
-    def __new__(cls, tool_call_name: str):
-        value = str.__new__(cls, "")
-        value._mada_tool_call_name = tool_call_name
-        return value
-
-
-class _InternalResponseReplacement(str):
-    """
-    Empty stream chunk that replaces previously collected response text.
-    """
-
-    def __new__(cls, replacement: str):
-        value = str.__new__(cls, "")
-        value._mada_response_replacement = replacement
-        return value
-
-
-class _InternalError(str):
-    """
-    Empty stream chunk that signals an internal error condition.
-    """
-
-    def __new__(cls, error_message: str):
-        value = str.__new__(cls, "")
-        value._mada_error_message = error_message
-        return value
 
 
 class MagenticOrchestrationStrategy(BaseOrchestrationStrategy):
@@ -440,7 +413,7 @@ Guidelines:
         if not participant_name:
             return []
 
-        return [_InternalToolCallSignal(str(participant_name))]
+        return [InternalToolCallSignal(str(participant_name))]
 
     @classmethod
     def _call_notices_from_event(
@@ -806,7 +779,7 @@ Guidelines:
         if main_output and main_output != streamed_text:
             if bg_ack and main_output == bg_ack:
                 # Background task ack is a fallback when no final text is available.
-                yield "chunk", _InternalResponseReplacement(main_output)
+                yield "chunk", InternalResponseReplacement(main_output)
             elif final_text and final_text.startswith(streamed_text):
                 # Final text extends streamed - yield delta only
                 delta = final_text[len(streamed_text) :]
@@ -814,7 +787,7 @@ Guidelines:
                     yield "chunk", delta
             elif final_text:
                 # Final text replaces streamed
-                yield "chunk", _InternalResponseReplacement(main_output)
+                yield "chunk", InternalResponseReplacement(main_output)
         yield "final", main_output
 
     @staticmethod
@@ -892,7 +865,7 @@ Guidelines:
         Process OpenAI-style chat messages through a fresh Magentic workflow.
 
         Streams chunks incrementally as they arrive from Magentic. Uses structured
-        markers (_InternalResponseReplacement, _InternalError) for replacements
+        markers (InternalResponseReplacement, InternalError) for replacements
         and errors rather than string-prefix detection, allowing normal model
         output to contain phrases like "Error processing message:" without being
         misinterpreted as internal signals.
@@ -911,9 +884,7 @@ Guidelines:
                 include_tool_notices=False,
             ):
                 if kind == "chunk":
-                    replacement_text = getattr(
-                        value, "_mada_response_replacement", None
-                    )
+                    replacement_text = response_replacement(value)
                     if replacement_text is not None:
                         streamed_text = str(replacement_text)
                     else:
@@ -924,7 +895,7 @@ Guidelines:
                 elif kind == "background_task":
                     continue
 
-            final_replacement = getattr(final_text, "_mada_response_replacement", None)
+            final_replacement = response_replacement(final_text)
             final_output = (
                 str(final_replacement)
                 if final_replacement is not None
@@ -936,14 +907,14 @@ Guidelines:
                     if delta:
                         yield delta
                 else:
-                    yield _InternalResponseReplacement(final_output)
+                    yield InternalResponseReplacement(final_output)
             elif not final_output:
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)
             traceback.print_exc()
-            yield _InternalError(error_msg)
+            yield InternalError(error_msg)
 
     async def process_message(
         self,
@@ -951,6 +922,7 @@ Guidelines:
         message: str,
         isolated_session: bool = False,
         persistence_session_id: str | None = None,
+        stateless_session: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message through a fresh Magentic workflow.
@@ -967,7 +939,11 @@ Guidelines:
             # Load history inside lock for non-isolated sessions to ensure atomicity
             # between turn_id reservation and history snapshot
             if isolated_session:
-                if persistence_session_id is None:
+                if stateless_session:
+                    history = []
+                elif persistence_session_id is None:
+                    # Isolated without explicit session: load current history for context
+                    # (used by CLI/UI background follow-ups) but don't persist
                     history = orchestrator.session_manager.load_history()
                 else:
                     history = await orchestrator._load_history_for_session(
@@ -993,9 +969,7 @@ Guidelines:
                 if kind == "notice":
                     yield value
                 elif kind == "chunk":
-                    replacement_text = getattr(
-                        value, "_mada_response_replacement", None
-                    )
+                    replacement_text = response_replacement(value)
                     if replacement_text is not None:
                         streamed_text = str(replacement_text)
                         yield value
@@ -1008,12 +982,23 @@ Guidelines:
                     background_task_descriptors.append(value)
 
             if isolated_session:
-                await orchestrator._persist_isolated_response(
-                    message,
-                    aggregated_assistant_reply,
-                    background_task_descriptors=background_task_descriptors,
-                    session_id=persistence_session_id,
-                )
+                if stateless_session:
+                    orchestrator.background_tasks.start_background_tool_poll_from_reply_if_needed(
+                        aggregated_assistant_reply,
+                        persist_result=False,
+                    )
+                    for descriptor in background_task_descriptors:
+                        orchestrator.background_tasks.start_background_tool_poll_from_reply_if_needed(
+                            descriptor,
+                            persist_result=False,
+                        )
+                elif persistence_session_id is not None:
+                    await orchestrator._persist_isolated_response(
+                        message,
+                        aggregated_assistant_reply,
+                        background_task_descriptors=background_task_descriptors,
+                        session_id=persistence_session_id,
+                    )
             else:
                 await orchestrator._commit_completed_turn(
                     turn_id,
@@ -1031,7 +1016,7 @@ Guidelines:
                     if delta:
                         yield delta
                 else:
-                    yield _InternalResponseReplacement(output)
+                    yield InternalResponseReplacement(output)
             elif not output.strip():
                 LOG.warning("No final assistant text received from Magentic workflow")
         except Exception as e:
@@ -1043,4 +1028,4 @@ Guidelines:
             error_msg = f"Error processing message: {e}"
             LOG.error(error_msg)
             traceback.print_exc()
-            yield _InternalError(error_msg)
+            yield InternalError(error_msg)

@@ -48,6 +48,10 @@ from mada.core.orchestration import (
     BaseOrchestrationStrategy,
     MagenticOrchestrationStrategy,
 )
+from mada.core.orchestration.stream_events import (
+    apply_text_control,
+    tool_call_name,
+)
 from mada.core.tls import resolve_httpx_verify_value
 
 
@@ -912,6 +916,7 @@ Guidelines:
         message: str,
         isolated_session: bool = False,
         persistence_session_id: Optional[str] = None,
+        stateless_session: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message using the configured strategy.
@@ -921,6 +926,7 @@ Guidelines:
             message,
             isolated_session=isolated_session,
             persistence_session_id=persistence_session_id,
+            stateless_session=stateless_session,
         ):
             yield chunk
 
@@ -1263,6 +1269,7 @@ Guidelines:
         message: str,
         isolated_session: bool = False,
         persistence_session_id: Optional[str] = None,
+        stateless_session: bool = False,
         first_tool_call: Optional[asyncio.Event] = None,
         first_tool_state: Optional[Dict[str, str]] = None,
     ) -> str:
@@ -1282,6 +1289,8 @@ Guidelines:
                 context.
             persistence_session_id: Optional chat session where isolated
                 request output should be persisted.
+            stateless_session: If True, isolated processing starts with no chat
+                history and does not persist output.
             first_tool_call: Optional event set when the streamed response first
                 reports a tool call.
             first_tool_state: Optional mutable mapping populated with the first
@@ -1299,38 +1308,32 @@ Guidelines:
             message,
             isolated_session=isolated_session,
             persistence_session_id=persistence_session_id,
+            stateless_session=stateless_session,
         ):
-            internal_tool_call_name = getattr(
-                response_chunk,
-                "_mada_tool_call_name",
-                None,
-            )
+            internal_tool_call_name = tool_call_name(response_chunk)
             if (
                 first_tool_call
                 and first_tool_state is not None
                 and internal_tool_call_name
             ):
-                first_tool_state["name"] = str(internal_tool_call_name)
+                first_tool_state["name"] = internal_tool_call_name
                 first_tool_call.set()
                 continue
 
-            response_replacement = getattr(
-                response_chunk,
-                "_mada_response_replacement",
-                None,
-            )
-            if response_replacement is not None:
-                response_chunks = [str(response_replacement)]
+            handled, terminal = apply_text_control(response_chunks, response_chunk)
+            if handled:
+                if terminal:
+                    break
                 continue
 
-            response_chunks.append(response_chunk)
+            response_chunks.append(str(response_chunk))
             if (
                 first_tool_call
                 and first_tool_state is not None
-                and response_chunk.startswith("\n[Calling:")
+                and str(response_chunk).startswith("\n[Calling:")
             ):
                 first_tool_state["name"] = (
-                    response_chunk.strip()[len("[Calling:") :].rstrip("]").strip()
+                    str(response_chunk).strip()[len("[Calling:") :].rstrip("]").strip()
                 )
                 first_tool_call.set()
         return "".join(response_chunks)

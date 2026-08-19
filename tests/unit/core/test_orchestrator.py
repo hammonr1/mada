@@ -9,6 +9,7 @@ from mada.core.config import (
     OpenAIModelConfig,
     RemoteA2AAgentConfig,
 )
+from mada.core.orchestration.stream_events import InternalError
 from mada.core.orchestrator import MADAOrchestrator
 
 
@@ -150,3 +151,26 @@ async def test_load_remote_a2a_agent_cards_skips_unavailable_agents(monkeypatch)
             "error": "offline",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_collect_message_response_surfaces_internal_error(monkeypatch):
+    orchestrator = MADAOrchestrator(
+        model_config=OpenAIModelConfig(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="sk-test",
+            base_url="https://example.invalid/v1",
+        ),
+        session_manager=object(),
+    )
+
+    async def process_message(*args, **kwargs):
+        yield "partial"
+        yield InternalError("Error processing message: boom")
+
+    monkeypatch.setattr(orchestrator, "process_message", process_message)
+
+    response = await orchestrator.collect_message_response("hello")
+
+    assert response == "Error processing message: boom"

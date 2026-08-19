@@ -193,6 +193,7 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         message: str,
         isolated_session: bool = False,
         persistence_session_id: str | None = None,
+        stateless_session: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message through the planning agent.
@@ -213,8 +214,22 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                 history_lengths,
             ) = await orchestrator._create_run_session(isolated_session)
 
+            prompt = message
+            if (
+                isolated_session
+                and persistence_session_id is not None
+                and not stateless_session
+            ):
+                history = await orchestrator._load_history_for_session(
+                    persistence_session_id
+                )
+                transcript_messages = orchestrator._normalize_transcript_messages(
+                    [*history, {"role": "user", "content": message}]
+                )
+                prompt = orchestrator.build_prompt_from_transcript(transcript_messages)
+
             stream = orchestrator.planning_agent.run(
-                message, session=run_session, stream=True
+                prompt, session=run_session, stream=True
             )
             async for chunk in stream:
                 if chunk.text:
@@ -230,6 +245,17 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
                 LOG.warning("No text chunks received from planning agent")
 
             if isolated_session:
+                if stateless_session:
+                    orchestrator.background_tasks.start_background_tool_poll_from_reply_if_needed(
+                        aggregated_assistant_reply,
+                        persist_result=False,
+                    )
+                    for descriptor in background_task_descriptors:
+                        orchestrator.background_tasks.start_background_tool_poll_from_reply_if_needed(
+                            descriptor,
+                            persist_result=False,
+                        )
+                    return
                 await orchestrator._persist_isolated_response(
                     message,
                     aggregated_assistant_reply,

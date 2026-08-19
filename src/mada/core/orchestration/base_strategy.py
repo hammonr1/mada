@@ -306,6 +306,7 @@ class BaseOrchestrationStrategy(ABC):
         message: str,
         isolated_session: bool = False,
         persistence_session_id: str | None = None,
+        stateless_session: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Process one interactive user message for this orchestration mode.
