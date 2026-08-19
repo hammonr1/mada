@@ -295,8 +295,9 @@ class MADAA2AService:
         Yield the authoritative orchestrator response for a single A2A message.
 
         Magentic can emit replacement/error control chunks after provisional
-        text. A2A string streams have no retract operation, so this buffers
-        text and yields only the final authoritative content.
+        text. A2A string streams have no retract operation, so Magentic output
+        is buffered and yielded only after its authoritative content is known.
+        Other orchestration modes stream chunks immediately.
 
         Uses isolated sessions to avoid interference with the main orchestrator
         session, but does not persist conversation history across A2A requests
@@ -305,12 +306,22 @@ class MADAA2AService:
         if self.orchestrator is None:
             raise RuntimeError("Orchestrator not initialized")
 
+        orchestration_config = (
+            getattr(self.config, "orchestration", None) or OrchestrationConfig()
+        )
+        is_magentic = orchestration_config.mode == "magentic"
         chunks: list[str] = []
         async for chunk in self.orchestrator.process_message(
             message,
             isolated_session=True,
             stateless_session=True,
         ):
+            if not is_magentic:
+                content = str(chunk)
+                if content:
+                    yield content
+                continue
+
             handled, terminal = apply_text_control(chunks, chunk)
             if handled:
                 if terminal:

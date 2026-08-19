@@ -1090,12 +1090,21 @@ Guidelines:
                     self.session_manager.current_session_id = previous_session_id
             return
 
-        if not self.background_tasks.user_message_already_started_background_task(
-            message
-        ):
+        # Check if interface layer already persisted a background-start ACK
+        already_started = (
+            self.background_tasks.user_message_already_started_background_task(message)
+        )
+
+        if not already_started:
             self.session_manager.add_message("user", message)
+
+        # Skip persisting duplicate background ACKs
         if assistant_reply.strip():
-            self.session_manager.add_message("assistant", assistant_reply)
+            from mada.core.background_tasks import is_background_task_start_ack
+
+            is_bg_ack = is_background_task_start_ack(assistant_reply)
+            if not (already_started and is_bg_ack):
+                self.session_manager.add_message("assistant", assistant_reply)
 
         self.background_tasks.start_background_tool_poll_from_reply_if_needed(
             assistant_reply
@@ -1249,12 +1258,21 @@ Guidelines:
         assistant_reply = completed["assistant_reply"]
         background_task_descriptors = completed.get("background_task_descriptors", [])
 
-        if not self.background_tasks.user_message_already_started_background_task(
-            message
-        ):
+        # Check if interface layer already persisted a background-start ACK
+        already_started = (
+            self.background_tasks.user_message_already_started_background_task(message)
+        )
+
+        if not already_started:
             self.session_manager.add_message("user", message)
+
+        # Skip persisting duplicate background ACKs
         if assistant_reply.strip():
-            self.session_manager.add_message("assistant", assistant_reply)
+            from mada.core.background_tasks import is_background_task_start_ack
+
+            is_bg_ack = is_background_task_start_ack(assistant_reply)
+            if not (already_started and is_bg_ack):
+                self.session_manager.add_message("assistant", assistant_reply)
 
         self.background_tasks.start_background_tool_poll_from_reply_if_needed(
             assistant_reply

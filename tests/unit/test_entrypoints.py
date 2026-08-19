@@ -1378,6 +1378,7 @@ class TestMADAA2ACmd:
             self, create_dummy_config: Callable
         ):
             config = create_dummy_config()
+            config.orchestration = SimpleNamespace(mode="magentic")
             service = MADAA2AService(
                 config=config,
                 public_url="https://mada.example/a2a",
@@ -1410,6 +1411,7 @@ class TestMADAA2ACmd:
             self, create_dummy_config: Callable
         ):
             config = create_dummy_config()
+            config.orchestration = SimpleNamespace(mode="magentic")
             service = MADAA2AService(
                 config=config,
                 public_url="https://mada.example/a2a",
@@ -1437,7 +1439,7 @@ class TestMADAA2ACmd:
             assert chunks == ["Error processing message: boom"]
 
         @pytest.mark.asyncio
-        async def test_stream_response_yields_authoritative_a2a_content(
+        async def test_stream_response_streams_incrementally_in_agent_as_tool_mode(
             self, create_dummy_config: Callable
         ):
             service = MADAA2AService(
@@ -1464,7 +1466,7 @@ class TestMADAA2ACmd:
 
             chunks = [chunk async for chunk in service.stream_response("hello")]
 
-            assert chunks == ["first second"]
+            assert chunks == ["first", " second"]
 
     @pytest.mark.skipif(
         not hasattr(httpx, "ASGITransport"),
