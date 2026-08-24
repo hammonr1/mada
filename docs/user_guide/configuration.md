@@ -10,6 +10,7 @@ Additionally, there are optional configuration options:
 
 - [Database Configuration](#optional-database-configuration)
 - [Gradio Interface Configuration](#optional-gradio-interface-configuration)
+- [Orchestration Configuration](#optional-orchestration-configuration)
 
 ## Agent Configuration
 
@@ -117,6 +118,7 @@ A typical agent configuration might include multiple MCP servers, each with diff
 | `url`         | URL for when `transport` is set to 'streamable-http'.         | No        | None      |
 | `command`     | Command to launch server when `transport` is set to `stdio`.  | No        | None      |
 | `description` | Human-readable description of the server.                     | No        | None      |
+| `verify`      | TLS verification for `streamable-http`. Use `true` for env/system trust, `false` to disable verification, or a CA bundle path. | No | `true` |
 
 ### Example
 
@@ -125,7 +127,8 @@ A typical agent configuration might include multiple MCP servers, each with diff
     "flux": {
         "transport": "streamable-http",
         "url": "http://localhost:8001/mcp",
-        "description": "Flux workload manager for job execution"
+        "description": "Flux workload manager for job execution",
+        "verify": true
     },
     "merlin": {
         "transport": "streamable-http",
@@ -143,6 +146,10 @@ A typical agent configuration might include multiple MCP servers, each with diff
 ## Model Configuration
 
 Model configuration tells MADA which language model to use for agent conversations, and how to connect to the selected provider. Depending on the provider, this may include values such as the model name, API key, base URL, region, or other authentication settings.
+
+For OpenAI-compatible providers, `verify` controls TLS verification. Use
+`true` to keep MADA's default env/system trust resolution, `false` to disable
+verification, or a CA bundle path string.
 
 MADA supports multiple providers for model configuration. Each provider has its own required and optional fields. Refer to the following documentation for provider-specific details:
 
@@ -173,6 +180,7 @@ export API_BASE_URL="https://api.openai.com/v1/responses"
     "model": "o3",
     "api_key": "${API_KEY}",
     "base_url": "${API_BASE_URL:-https://api.openai.com/v1/responses}",
+    "verify": true,
     "extra": {
         "temperature": 0.7,
         "max_tokens": 2048
@@ -195,6 +203,31 @@ When you start MADA, it reads your model configuration to connect to the right l
 
 - Fill out the model configuration section with your preferred model and settings.
 - Make sure your API key and endpoint are correct.
+
+## (Optional) Orchestration Configuration
+
+MADA now exposes the orchestration pattern as an explicit top-level config block. In
+this release, the current planner-plus-specialist flow is named `agent-as-tool` and
+it is the only supported mode.
+
+### Fields
+
+| Field Name     | Description                                                                 | Required? | Default           |
+| -------------- | --------------------------------------------------------------------------- | --------- | ----------------- |
+| `mode`         | Internal orchestration mode. Only `agent-as-tool` is supported right now.   | No        | `agent-as-tool`   |
+| `participants` | Optional list of specialist agent names to include. `PlanningAgent` is excluded. | No        | All non-`PlanningAgent` agents |
+
+### Example
+
+```json
+"orchestration": {
+    "mode": "agent-as-tool",
+    "participants": ["JobManagementAgent", "InverseDesignAgent", "GeometryAgent"]
+}
+```
+
+If `participants` is omitted, MADA includes every configured agent except
+`PlanningAgent`.
 
 ## (Optional) Database Configuration
 
