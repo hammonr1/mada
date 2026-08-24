@@ -2,9 +2,12 @@
 Runtime tools for manifest-based skills.
 """
 
+import logging
 from typing import Any, Callable
 
 from .skill_runtime import SkillRuntime
+
+LOG = logging.getLogger(__name__)
 
 
 def build_load_skill_tool(skill_runtime: SkillRuntime) -> Callable[[str], str]:
@@ -28,6 +31,7 @@ def build_load_skill_tool(skill_runtime: SkillRuntime) -> Callable[[str], str]:
         Returns:
             Full markdown content of the requested skill.
         """
+        LOG.debug(f"Tool 'load_skill' invoked for skill '{skill_name}'")
         return skill_runtime.load_skill(skill_name)
 
     # Keep the callable self-describing for the runtime/tooling layers.
@@ -36,6 +40,7 @@ def build_load_skill_tool(skill_runtime: SkillRuntime) -> Callable[[str], str]:
     load_skill.description = (
         "Load the full SKILL.md instructions for a manifest-based skill by name."
     )
+    LOG.debug("Built runtime tool 'load_skill'")
     return load_skill
 
 
@@ -63,6 +68,10 @@ def build_read_skill_resource_tool(
         Returns:
             Full text content of the requested resource.
         """
+        LOG.debug(
+            f"Tool 'read_skill_resource' invoked for skill '{skill_name}' "
+            f"and resource '{resource_path}'"
+        )
         return skill_runtime.read_skill_resource(skill_name, resource_path)
 
     read_skill_resource.__name__ = "read_skill_resource"
@@ -71,6 +80,7 @@ def build_read_skill_resource_tool(
         "Read a discovered text resource for a manifest-based skill by skill name "
         "and relative resource path."
     )
+    LOG.debug("Built runtime tool 'read_skill_resource'")
     return read_skill_resource
 
 
@@ -103,6 +113,10 @@ def build_run_skill_script_tool(
         Returns:
             Structured approval and execution result for the script.
         """
+        LOG.info(
+            f"Tool 'run_skill_script' invoked for skill '{skill_name}' "
+            f"and script '{script_name}'"
+        )
         return skill_runtime.run_skill_script(skill_name, script_name, args=args)
 
     run_skill_script.__name__ = "run_skill_script"
@@ -111,4 +125,5 @@ def build_run_skill_script_tool(
         "Validate, request approval for, and execute a discovered manifest-based "
         "skill script by skill name and relative script path."
     )
+    LOG.debug("Built runtime tool 'run_skill_script'")
     return run_skill_script

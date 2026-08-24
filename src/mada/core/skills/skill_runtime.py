@@ -1,7 +1,7 @@
 """
 Runtime helpers for manifest-based skills.
 """
-
+import logging
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -24,6 +24,7 @@ from .skill_registry import (
     SkillRegistryError,
 )
 
+LOG = logging.getLogger(__name__)
 
 class SkillRuntimeError(Exception):
     """Raised when runtime access to manifest-based skill content fails."""
@@ -36,8 +37,18 @@ class SkillRuntime:
         self,
         skill_registry: SkillRegistry,
         config: SkillRuntimeConfig | None = None,
-        script_approver: SkillScriptApprover | None = None,
+                script_approver: SkillScriptApprover | None = None,
     ):
+        """
+        Initialize runtime access to discovered skills.
+
+        Args:
+            skill_registry: Registry of discovered skills.
+            config: Runtime limits and approval policy. Defaults are used when
+                omitted.
+            script_approver: Approver consulted before running a skill script.
+                Defaults to denying every script.
+        """
         self.skill_registry = skill_registry
         self.config = config or SkillRuntimeConfig()
         self.script_approver = script_approver or DenyAllSkillScriptApprover()
@@ -46,6 +57,7 @@ class SkillRuntime:
         """Load the full SKILL.md body for a skill."""
         skill = self.skill_registry.get_skill(skill_name)
         self._require_allowed_tool(skill_name, skill.allowed_tools, "load_skill")
+        LOG.info(f"Loading skill '{skill_name}' from '{skill.manifest_path}'")
         try:
             return parse_skill_manifest(skill.root_path).content
         except SkillManifestError as exc:
@@ -65,7 +77,10 @@ class SkillRuntime:
             skill_name, skill.allowed_tools, "read_skill_resource"
         )
         self._validate_resource(skill.root_path, resource)
-
+        LOG.debug(
+            f"Reading resource '{normalized_path}' ({resource.size_bytes} bytes) "
+            f"for skill '{skill_name}'"
+        )
         try:
             return resource.file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
@@ -114,8 +129,12 @@ class SkillRuntime:
             timeout_seconds=self.config.default_script_timeout_seconds,
         )
         decision = self.script_approver.approve_skill_script(approval_request)
-
+        LOG.info(
+            f"Script '{normalized_name}' for skill '{skill_name}' was "
+            f"{'approved' if decision.approved else 'denied'}: {decision.reason}"
+        )
         if not decision.approved:
+            LOG.warning(reason)
             return {
                 "status": "denied",
                 "skill_name": skill_name,
@@ -261,7 +280,10 @@ class SkillRuntime:
         command = self._build_script_command(script, normalized_args)
         timeout_seconds = self.config.default_script_timeout_seconds
         cwd = skill_root.resolve()
-
+        LOG.info(
+            f"Executing skill script '{script.path}' for skill '{skill_name}' "
+            f"in '{cwd}' with a {timeout_seconds}s timeout"
+        )
         try:
             completed = subprocess.run(
                 command,
@@ -272,6 +294,9 @@ class SkillRuntime:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
+            LOG.warning(
+                f"Skill script '{script.path}' timed out after {timeout_seconds}s"
+            )
             stdout, stdout_truncated = self._truncate_output(exc.stdout)
             stderr, stderr_truncated = self._truncate_output(exc.stderr)
             return {
@@ -315,7 +340,9 @@ class SkillRuntime:
             result["status"] = "success"
             result["reason"] = "Skill script completed successfully."
             return result
-
+        LOG.warning(
+            f"Skill script '{script.path}' exited with status {completed.returncode}"
+        )
         result["status"] = "nonzero_exit"
         result["reason"] = (
             f"Skill script exited with non-zero status {completed.returncode}."

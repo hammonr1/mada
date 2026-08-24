@@ -2,11 +2,14 @@
 Utilities for parsing manifest-based SKILL.md files.
 """
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import yaml
+
+LOG = logging.getLogger(__name__)
 
 
 class SkillManifestError(Exception):
@@ -45,6 +48,19 @@ class SkillManifest:
 
 
 def _extract_frontmatter_parts(raw_text: str) -> Tuple[str, str]:
+    """
+    Split raw SKILL.md text into its YAML frontmatter and markdown body.
+
+    Args:
+        raw_text: Full text of a SKILL.md file.
+
+    Returns:
+        Tuple of the frontmatter text and the stripped markdown body.
+
+    Raises:
+        SkillManifestError: If the file is empty or the frontmatter delimiters
+            are missing or unterminated.
+    """
     lines: List[str] = raw_text.splitlines()
     if not lines:
         raise SkillManifestError("SKILL.md is empty.")
@@ -71,6 +87,18 @@ def _extract_frontmatter_parts(raw_text: str) -> Tuple[str, str]:
 
 
 def _parse_frontmatter(frontmatter_text: str) -> Dict[str, Any]:
+    """
+    Parse manifest frontmatter into a mapping.
+
+    Args:
+        frontmatter_text: YAML text extracted from between the delimiters.
+
+    Returns:
+        Parsed mapping, or an empty mapping when the frontmatter is blank.
+
+    Raises:
+        SkillManifestError: If the YAML is malformed or is not a mapping.
+    """
     try:
         data = yaml.safe_load(frontmatter_text) if frontmatter_text.strip() else {}
     except yaml.YAMLError as exc:
@@ -86,6 +114,22 @@ def _parse_frontmatter(frontmatter_text: str) -> Dict[str, Any]:
 
 
 def _parse_allowed_tools(value: Any, manifest_path: Path) -> List[str]:
+    """
+    Validate and normalize a manifest's `allowed_tools` entry.
+
+    An empty or absent entry means the skill permits every supported tool.
+
+    Args:
+        value: Raw `allowed_tools` value from the frontmatter.
+        manifest_path: Path to the manifest, used in error messages.
+
+    Returns:
+        Normalized list of permitted tool names.
+
+    Raises:
+        SkillManifestError: If the value is not a list of unique, non-empty,
+            supported tool names.
+    """
     if value is None:
         return []
 
@@ -132,6 +176,22 @@ def _parse_string_field(
     *,
     required: bool = False,
 ) -> str:
+    """
+    Read and normalize one optional or required string field.
+
+    Args:
+        manifest_data: Parsed frontmatter mapping.
+        field_name: Name of the field to read.
+        manifest_path: Path to the manifest, used in error messages.
+        required: If True, the field must resolve to a non-empty string.
+
+    Returns:
+        Stripped field value, or an empty string when absent and optional.
+
+    Raises:
+        SkillManifestError: If the value is not a string, or is empty while
+            required.
+    """
     value = manifest_data.get(field_name, "")
     if value is None:
         value = ""
@@ -159,9 +219,14 @@ def parse_skill_manifest(skill_path: Path) -> SkillManifest:
 
     Returns:
         A parsed SkillManifest instance.
+
+    Raises:
+        SkillManifestError: If the manifest is missing, malformed, or fails
+            validation.
     """
     skill_path = Path(skill_path).resolve()
     manifest_path = skill_path / "SKILL.md"
+    LOG.debug(f"Parsing skill manifest at '{manifest_path}'")
 
     if not manifest_path.exists():
         raise SkillManifestError(
@@ -222,6 +287,9 @@ def parse_skill_manifest(skill_path: Path) -> SkillManifest:
             f"Skill manifest '{manifest_path}' has invalid 'metadata': expected a mapping."
         )
 
+    LOG.debug(
+        f"Parsed skill '{name}' with {len(allowed_tools) or 'all'} allowed tool(s)"
+    )
     return SkillManifest(
         name=name,
         description=description,

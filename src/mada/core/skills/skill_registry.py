@@ -3,12 +3,14 @@ Discovery and indexing for manifest-based SKILL.md skills.
 """
 
 from dataclasses import dataclass, field
+import logging
 import mimetypes
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from .skill_manifest import parse_skill_manifest
 
+LOG = logging.getLogger(__name__)
 
 class SkillRegistryError(Exception):
     """Raised when manifest-based skill discovery or lookup fails."""
@@ -69,10 +71,29 @@ SUPPORTED_SCRIPT_RUNNERS = {
 
 
 def _is_hidden_path(path: Path) -> bool:
+    """
+    Return True when any component of a path is hidden.
+
+    Args:
+        path: Relative path to inspect.
+
+    Returns:
+        True when any path component begins with a dot.
+    """
     return any(part.startswith(".") for part in path.parts)
 
 
 def _is_text_readable(resource_path: Path, media_type: str) -> bool:
+    """
+    Return True when a resource can be read as text.
+
+    Args:
+        resource_path: Path to the resource file.
+        media_type: Guessed media type for the resource.
+
+    Returns:
+        True when the extension is a known text type or the media type is text.
+    """
     if resource_path.suffix.lower() in TEXT_RESOURCE_EXTENSIONS:
         return True
     return media_type.startswith("text/")
@@ -160,6 +181,10 @@ class SkillRegistry:
                     f"'{existing.manifest_path}' and '{skill.manifest_path}'."
                 )
             self._skills[skill.name] = skill
+            LOG.debug(
+                f"Registered skill '{skill.name}' with "
+                f"{len(skill.resources)} resource(s) and {len(skill.scripts)} script(s)"
+            )
 
     @classmethod
     def discover(cls, roots: Iterable[Path]) -> "SkillRegistry":
@@ -176,6 +201,8 @@ class SkillRegistry:
                 raise SkillRegistryError(
                     f"Skill discovery root '{root_path}' is not a directory."
                 )
+
+            LOG.debug(f"Searching for skills under '{root_path}'")
 
             for manifest_path in sorted(root_path.rglob("SKILL.md")):
                 skill_root = manifest_path.parent
@@ -195,6 +222,7 @@ class SkillRegistry:
                     )
                 )
 
+        LOG.info(f"Discovered {len(discovered)} manifest-based skill(s)")
         return cls(discovered)
 
     def list_skills(self) -> List[DiscoveredSkill]:
@@ -275,6 +303,18 @@ class SkillRegistry:
 
     @staticmethod
     def _skill_allows_tool(skill: DiscoveredSkill, tool_name: str) -> bool:
+        """
+        Return True when a skill permits use of the named runtime tool.
+
+        A skill with no `allowed_tools` entry permits every tool.
+
+        Args:
+            skill: Discovered skill to check.
+            tool_name: Runtime tool name.
+
+        Returns:
+            True when the tool is permitted for this skill.
+        """
         if not skill.allowed_tools:
             return True
         return tool_name in skill.allowed_tools
