@@ -5,7 +5,7 @@ CLI approval adapter for manifest-based skill script execution.
 from pathlib import Path
 from typing import Callable
 
-from mada.core.skill.skill_approval import (
+from mada.core.skills.skill_approval import (
     SkillScriptApprovalDecision,
     SkillScriptApprovalRequest,
 )

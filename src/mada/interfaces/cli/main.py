@@ -19,9 +19,9 @@ from mada.core.config import AppConfig, OrchestrationConfig, load_config_from_js
 from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
 
-from mada.core.skill.skill_registry import SkillRegistry
-from mada.core.skill.skill_runtime import SkillRuntime
-from mada.core.skill.skill_tools import (
+from mada.core.skills.skill_registry import SkillRegistry
+from mada.core.skills.skill_runtime import SkillRuntime
+from mada.core.skills.skill_tools import (
     build_load_skill_tool,
     build_read_skill_resource_tool,
     build_run_skill_script_tool,

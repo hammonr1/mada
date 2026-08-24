@@ -2,7 +2,7 @@
 Coarse Gradio approval policies for manifest-based skill script execution.
 """
 
-from mada.core.skill.skill_approval import (
+from mada.core.skills.skill_approval import (
     SkillScriptApprovalDecision,
     SkillScriptApprovalRequest,
 )

@@ -32,7 +32,7 @@ from mada.core.config import (
 )
 from mada.core.coordinator import MCPAgentManager
 from mada.core.database import ChatSessionManager
-from mada.core.skill.skill_registry import SkillRegistry
+from mada.core.skills.skill_registry import SkillRegistry
 
 from mada.core.orchestration import (
     AgentAsToolOrchestrationStrategy,
