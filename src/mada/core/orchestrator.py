@@ -49,8 +49,6 @@ from mada.core.orchestration import (
 )
 from mada.core.tls import resolve_httpx_verify_value
 
-from mada.core.tls import resolve_httpx_verify_value
-
 try:
     BaseExceptionGroup
 except NameError:
@@ -83,7 +81,7 @@ class MADAOrchestrator(MCPAgentManager):
         self,
         model_config: Optional[ModelConfig] = None,
         database_config: Optional[DatabaseConfig] = None,
-                session_manager: ChatSessionManager = None,
+        session_manager: ChatSessionManager = None,
         skill_registry: Optional[SkillRegistry] = None,
         skill_tools: Optional[List[Any]] = None,
         orchestration_config: Optional[OrchestrationConfig] = None,
@@ -591,9 +589,9 @@ Your specialist agents (available as tools) can be delegated tasks.
         skill_guidance = ""
         if skill_advertisement:
                 skill_guidance = f"""
-        Manifest-based skills available via runtime tools:
-        {skill_advertisement}
-        """
+Manifest-based skills available via runtime tools:
+{skill_advertisement}
+"""
                 
         # Always append up to date team description and guidelines so the planning
         # agent knows how to use the tools.

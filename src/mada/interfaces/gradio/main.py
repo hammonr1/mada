@@ -89,6 +89,7 @@ def run_gradio(
         mcp_servers=config.mcp_servers,
         skill_registry=skill_registry,
         skill_tools=skill_tools,
+        a2a_agents=getattr(config, "a2a_agents", {}),
         orchestration_config=_get_orchestration_config(config),
     )
     gradio_interface = MADAMultiAgentGradioInterface(
@@ -135,6 +136,7 @@ def create_gradio_app(config_path: str) -> gr.Blocks:
         mcp_servers=config.mcp_servers,
         skill_registry=skill_registry,
         skill_tools=skill_tools,
+        a2a_agents=getattr(config, "a2a_agents", {}),
         orchestration_config=_get_orchestration_config(config),
     )
     gradio_interface = MADAMultiAgentGradioInterface(
@@ -164,6 +166,7 @@ def gradio_entrypoint(port: int | None, share: bool, config_file: str):
         print(f"Loading configuration from {config_file}")
         config = load_config_from_json(config_file)
         skill_registry, skill_tools = initialize_skill_state(config)
+        
         if not config.interface:
             print(
                 "No Gradio interface settings provided. Make sure your configuration file has an 'interface' section."

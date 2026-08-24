@@ -20,6 +20,7 @@ from mada.core.config import (
     MCPServerConfig,
     ModelConfig,
     OrchestrationConfig,
+    RemoteA2AAgentConfig,
 )
 from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
@@ -45,6 +46,7 @@ class MCPGradioClientSession:
         mcp_servers: MCPServerConfig = None,
         skill_registry: SkillRegistry = None,
         skill_tools: List[Any] = None,
+        a2a_agents: Dict[str, RemoteA2AAgentConfig] = None,
         orchestration_config: OrchestrationConfig = None,
         blocking: bool = False,
     ):
@@ -64,6 +66,7 @@ class MCPGradioClientSession:
         self.orchestrator = None
         self.initialized = False
         self.mcp_servers = mcp_servers or {}
+        self.a2a_agents = a2a_agents or {}
         self.orchestration_config = orchestration_config or OrchestrationConfig()
         self.session_manager = ChatSessionManager(database_config)
         self.session_bearer_token = None  # Store session bearer token
@@ -121,7 +124,8 @@ class MCPGradioClientSession:
             )
             status_msg, tools = await self.orchestrator.initialize_orchestrator(
                 agent_configs=self.agents,  # Use provided agents
-                mcp_servers=self.mcp_servers,  # Placeholder for MCP server config, replace with real config when available
+                mcp_servers=self.mcp_servers,
+                a2a_agents=self.a2a_agents,
             )
             LOG.info("Orchestrator initialization complete!")
             status_msg = (
@@ -146,7 +150,9 @@ class MCPGradioClientSession:
                 table_agent_dict = agent_dict
             self.initialized = True
             return gr.Button(status_msg, elem_id="green_btn"), create_agent_table(
-                table_agents, table_agent_dict
+                table_agents,
+                table_agent_dict,
+                self.a2a_agents,
             )
 
         except BaseExceptionGroup as eg:
@@ -157,7 +163,10 @@ class MCPGradioClientSession:
             error_msg = f"Failed to connect to MCP servers: {e}"
             LOG.error(error_msg)
             LOG.error("Full traceback:", exc_info=True)
-            return gr.Button(error_msg, variant="stop"), create_agent_table(self.agents)
+            return gr.Button(error_msg, variant="stop"), create_agent_table(
+                self.agents,
+                a2a_agents=self.a2a_agents,
+            )
 
     def list_sessions(self) -> List[str]:
         """
