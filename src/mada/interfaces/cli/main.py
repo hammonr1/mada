@@ -19,12 +19,7 @@ from mada.core.database import ChatSessionManager
 from mada.core.orchestrator import MADAOrchestrator
 
 from mada.core.skills.skill_registry import SkillRegistry
-from mada.core.skills.skill_runtime import SkillRuntime
-from mada.core.skills.skill_tools import (
-    build_load_skill_tool,
-    build_read_skill_resource_tool,
-    build_run_skill_script_tool,
-)
+from mada.core.skills.skill_setup import initialize_skill_state
 from mada.interfaces.cli.skill_approval import CLISkillScriptApprover
 
 try:
@@ -419,20 +414,10 @@ async def async_main(config_file: str, blocking: bool = False):
         config = load_config_from_json(config_file)
 
         # Initialize manifest-based skills
-        skill_registry = SkillRegistry.discover(config.skill_paths)
-        skill_runtime = SkillRuntime(
-            skill_registry,
-            config=config.skill_runtime_config,
-            script_approver=CLISkillScriptApprover(),
+        skill_registry, skill_tools = initialize_skill_state(
+            config,
+            CLISkillScriptApprover(),
         )
-
-        skill_tools = []
-        if skill_registry.has_skills_for_tool("load_skill"):
-            skill_tools.append(build_load_skill_tool(skill_runtime))
-        if skill_registry.has_resources_for_tool("read_skill_resource"):
-            skill_tools.append(build_read_skill_resource_tool(skill_runtime))
-        if skill_registry.has_scripts_for_tool("run_skill_script"):
-            skill_tools.append(build_run_skill_script_tool(skill_runtime))
 
         # Run CLI
         cli = MADACLIInterface(

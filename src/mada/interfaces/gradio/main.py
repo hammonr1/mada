@@ -22,12 +22,7 @@ from mada.interfaces.gradio.interface import MADAMultiAgentGradioInterface
 from mada.interfaces.gradio.mcp_client_wrapper import MCPGradioClientSession
 
 from mada.core.skills.skill_registry import SkillRegistry
-from mada.core.skills.skill_runtime import SkillRuntime
-from mada.core.skills.skill_tools import (
-    build_load_skill_tool,
-    build_read_skill_resource_tool,
-    build_run_skill_script_tool,
-)
+from mada.core.skills.skill_setup import initialize_skill_state
 from mada.interfaces.gradio.skill_approval import GradioPolicySkillScriptApprover
 
 
@@ -72,26 +67,6 @@ def setup_logging():
 
     print(f"Logging configured at {log_level} level")
 
-def _initialize_skill_state(config: AppConfig):
-    """
-    Discover manifest-based skills and build runtime tools for the UI.
-    """
-    skill_registry = SkillRegistry.discover(config.skill_paths)
-    skill_runtime = SkillRuntime(
-        skill_registry,
-        config=config.skill_runtime_config,
-        script_approver=GradioPolicySkillScriptApprover(),
-    )
-
-    skill_tools = []
-    if skill_registry.has_skills_for_tool("load_skill"):
-        skill_tools.append(build_load_skill_tool(skill_runtime))
-    if skill_registry.has_resources_for_tool("read_skill_resource"):
-        skill_tools.append(build_read_skill_resource_tool(skill_runtime))
-    if skill_registry.has_scripts_for_tool("run_skill_script"):
-        skill_tools.append(build_run_skill_script_tool(skill_runtime))
-
-    return skill_registry, skill_tools
 
 def run_gradio(
     config: AppConfig,
@@ -152,7 +127,9 @@ def create_gradio_app(config_path: str) -> gr.Blocks:
         Gradio Blocks interface
     """
     config = load_config_from_json(config_path)
-    skill_registry, skill_tools = _initialize_skill_state(config)
+    skill_registry, skill_tools = initialize_skill_state(
+        config, GradioPolicySkillScriptApprover()
+    )
 
     client = MCPGradioClientSession(
         model_config=config.model,
@@ -189,7 +166,9 @@ def gradio_entrypoint(port: int | None, share: bool, config_file: str):
     try:
         print(f"Loading configuration from {config_file}")
         config = load_config_from_json(config_file)
-        skill_registry, skill_tools = _initialize_skill_state(config)
+        skill_registry, skill_tools = initialize_skill_state(
+            config, GradioPolicySkillScriptApprover()
+        )
         if not config.interface:
             print(
                 "No Gradio interface settings provided. Make sure your configuration file has an 'interface' section."
