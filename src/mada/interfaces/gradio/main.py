@@ -76,7 +76,11 @@ def run_gradio(
     Launch the Gradio web interface using the provided configuration.
 
     Args:
-        config: The full application configuration object
+        config: The full application configuration object.
+        skill_registry: Registry of manifest-based skills to advertise to the
+            planning agent.
+        skill_tools: Runtime tools for loading skills and running skill
+            scripts.
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

@@ -54,8 +54,17 @@ class MCPGradioClientSession:
         Initialize the MCP client session.
 
         Args:
-            model_config: Model configuration for MADA
-            agents: List of agent configurations
+            model_config: Model configuration for MADA.
+            agents: List of agent configurations.
+            database_config: Configuration for the chat history database.
+            mcp_servers: MCP server configurations available to the agents.
+            skill_registry: Registry of manifest-based skills to advertise to
+                the planning agent. An empty registry is used when omitted.
+            skill_tools: Runtime tools for loading skills and running skill
+                scripts.
+            a2a_agents: Remote A2A agent configurations available to the
+                planning agent.
+            orchestration_config: Orchestration mode and participant settings.
             blocking: If True, wait for each response inline. If False,
                 submit queries in the background and return immediately.
         """

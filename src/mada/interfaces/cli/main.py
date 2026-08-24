@@ -51,6 +51,10 @@ class MADACLIInterface:
             config: Application configuration
             blocking: If True, wait for each response inline. If False,
                 submit queries in the background and return to the prompt.
+            skill_registry: Registry of manifest-based skills to advertise to
+                the planning agent. An empty registry is used when omitted.
+            skill_tools: Runtime tools for loading skills and running skill
+                scripts.
         """
         self.config = config
         self.blocking = blocking
