@@ -20,7 +20,6 @@ from mada.core.orchestrator import MADAOrchestrator
 
 from mada.core.skills.skill_registry import SkillRegistry
 from mada.core.skills.skill_setup import initialize_skill_state
-from mada.interfaces.cli.skill_approval import CLISkillScriptApprover
 
 try:
     BaseExceptionGroup
@@ -414,10 +413,7 @@ async def async_main(config_file: str, blocking: bool = False):
         config = load_config_from_json(config_file)
 
         # Initialize manifest-based skills
-        skill_registry, skill_tools = initialize_skill_state(
-            config,
-            CLISkillScriptApprover(),
-        )
+        skill_registry, skill_tools = initialize_skill_state(config)
 
         # Run CLI
         cli = MADACLIInterface(

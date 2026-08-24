@@ -23,7 +23,6 @@ from mada.interfaces.gradio.mcp_client_wrapper import MCPGradioClientSession
 
 from mada.core.skills.skill_registry import SkillRegistry
 from mada.core.skills.skill_setup import initialize_skill_state
-from mada.interfaces.gradio.skill_approval import GradioPolicySkillScriptApprover
 
 
 def _load_asset_text(filename: str) -> str:
@@ -127,9 +126,7 @@ def create_gradio_app(config_path: str) -> gr.Blocks:
         Gradio Blocks interface
     """
     config = load_config_from_json(config_path)
-    skill_registry, skill_tools = initialize_skill_state(
-        config, GradioPolicySkillScriptApprover()
-    )
+    skill_registry, skill_tools = initialize_skill_state(config)
 
     client = MCPGradioClientSession(
         model_config=config.model,
@@ -166,9 +163,7 @@ def gradio_entrypoint(port: int | None, share: bool, config_file: str):
     try:
         print(f"Loading configuration from {config_file}")
         config = load_config_from_json(config_file)
-        skill_registry, skill_tools = initialize_skill_state(
-            config, GradioPolicySkillScriptApprover()
-        )
+        skill_registry, skill_tools = initialize_skill_state(config)
         if not config.interface:
             print(
                 "No Gradio interface settings provided. Make sure your configuration file has an 'interface' section."

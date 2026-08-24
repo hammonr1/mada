@@ -40,14 +40,18 @@ class SkillRuntimeConfig:
         default_script_timeout_seconds: Default timeout for skill script execution.
         max_script_output_bytes: Maximum captured stdout/stderr size for a skill script.
         max_resource_bytes: Maximum readable size for a skill resource file.
-        auto_approve_skill_scripts: If True, allow skill scripts to run without
-            interactive approval.
+        default_skill_script_approval_mode: Approval mode applied when no
+            specific rule matches a script. One of "prompt", "approve", or "deny".
+        skill_script_approval_modes: Per-skill and per-script approval overrides.
+            Keys are matched most specific first: "skill_name:script_name", then
+            "skill_name", then "*" as a catch-all. Values are "approve" or "deny".
     """
 
     default_script_timeout_seconds: int = 30
     max_script_output_bytes: int = 32 * 1024
     max_resource_bytes: int = 32 * 1024
-    auto_approve_skill_scripts: bool = False
+    default_skill_script_approval_mode: str = "prompt"
+    skill_script_approval_modes: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -210,5 +214,5 @@ def load_config_from_json(path: str) -> AppConfig:
 
     config = AppConfig.from_dict(config_dict)
     config.skill_paths = _resolve_skill_paths(config.skill_paths, path)
-        
+
     return config

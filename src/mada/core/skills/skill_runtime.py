@@ -14,7 +14,6 @@ from .skill_manifest import (
 )
 from .skill_approval import (
     DenyAllSkillScriptApprover,
-    SkillScriptApprovalDecision,
     SkillScriptApprovalRequest,
     SkillScriptApprover,
 )
@@ -114,7 +113,7 @@ class SkillRuntime:
             args=tuple(normalized_args),
             timeout_seconds=self.config.default_script_timeout_seconds,
         )
-        decision = self._approve_script(approval_request)
+        decision = self.script_approver.approve_skill_script(approval_request)
 
         if not decision.approved:
             return {
@@ -345,38 +344,3 @@ class SkillRuntime:
         if truncated:
             raw = raw[: self.config.max_script_output_bytes]
         return raw.decode("utf-8", errors="replace"), truncated
-
-    def _approve_script(
-        self,
-        request: SkillScriptApprovalRequest,
-    ) -> SkillScriptApprovalDecision:
-        if self.config.auto_approve_skill_scripts:
-            return SkillScriptApprovalDecision(
-                approved=True,
-                reason="Skill script was auto-approved by runtime configuration.",
-            )
-
-        approval_mode = self._resolve_skill_script_approval_mode(
-            request.skill_name,
-            request.script_name,
-        )
-
-        if approval_mode == "approve":
-            return SkillScriptApprovalDecision(
-                approved=True,
-                reason=(
-                    f"Skill script '{request.script_name}' for skill "
-                    f"'{request.skill_name}' was auto-approved by skill-specific policy."
-                ),
-            )
-
-        if approval_mode == "deny":
-            return SkillScriptApprovalDecision(
-                approved=False,
-                reason=(
-                    f"Skill script '{request.script_name}' for skill "
-                    f"'{request.skill_name}' was denied by skill-specific policy."
-                ),
-            )
-
-        return self.script_approver.approve_skill_script(request)
