@@ -15,7 +15,8 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
+from pathlib import Path
 
 from mada.core.config.agents import AgentConfig
 from mada.core.config.database import DatabaseConfig, load_database_config
@@ -70,7 +71,7 @@ class AppConfig:
     database: DatabaseConfig
     mcp_servers: Dict[str, MCPServerConfig] = None  # MCP server configurations
     interface: InterfaceConfig = None  # Optional, used only by the Gradio app
-    skill_paths: List[str] = field(default_factory=list)
+    skill_paths: List[Union[str, Path]] = field(default_factory=list)
     skill_runtime_config: SkillRuntimeConfig = field(default_factory=SkillRuntimeConfig)
     orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
 
@@ -169,6 +170,30 @@ class AppConfig:
 
         return cls(**app_conf)
 
+def _resolve_skill_paths(skill_paths: List[str], config_file: str) -> List[Path]:
+    """
+    Resolve skill discovery roots relative to the configuration file.
+
+    Relative entries are interpreted relative to the directory containing the
+    configuration file so every interface receives absolute paths.
+
+    Args:
+        skill_paths: Raw skill path strings from the configuration.
+        config_file: Path to the configuration file they came from.
+
+    Returns:
+        Absolute, resolved paths to each configured skill discovery root.
+    """
+    config_dir = Path(config_file).resolve().parent
+    resolved_paths = []
+
+    for raw_path in skill_paths:
+        skill_path = Path(raw_path)
+        if not skill_path.is_absolute():
+            skill_path = config_dir / skill_path
+        resolved_paths.append(skill_path.resolve())
+
+    return resolved_paths
 
 def load_config_from_json(path: str) -> AppConfig:
     """
@@ -183,4 +208,7 @@ def load_config_from_json(path: str) -> AppConfig:
     with open(path, "r") as f:
         config_dict = json.load(f)
 
-    return AppConfig.from_dict(config_dict)
+    config = AppConfig.from_dict(config_dict)
+    config.skill_paths = _resolve_skill_paths(config.skill_paths, path)
+        
+    return config

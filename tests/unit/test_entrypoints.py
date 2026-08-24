@@ -73,11 +73,9 @@ class DummyConfig:
         self.agents = ["a1", "a2"]
         self.mcp_servers = {"s1": MCPServerConfig(transport="stdio")}
         self.database = database
-        self.skill_paths = []
         self.skill_runtime_config = SkillRuntimeConfig()
         self.orchestration = OrchestrationConfig()
         self.skill_paths = []
-        self.skill_runtime_config = SkillRuntimeConfig()
 
 
 @pytest.fixture

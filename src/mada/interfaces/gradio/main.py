@@ -15,7 +15,6 @@ import os
 import importlib.resources
 
 import click
-from pathlib import Path
 import gradio as gr
 
 from mada.core.config import AppConfig, OrchestrationConfig, load_config_from_json
@@ -73,29 +72,11 @@ def setup_logging():
 
     print(f"Logging configured at {log_level} level")
 
-
-def _resolve_skill_paths(skill_paths: list[str], config_file: str) -> list[Path]:
-    """
-    Resolve configured skill discovery roots relative to the config file path.
-    """
-    config_dir = Path(config_file).resolve().parent
-    resolved_paths = []
-
-    for raw_path in skill_paths:
-        skill_path = Path(raw_path)
-        if not skill_path.is_absolute():
-            skill_path = config_dir / skill_path
-        resolved_paths.append(skill_path.resolve())
-
-    return resolved_paths
-
-
-def _initialize_skill_state(config: AppConfig, config_file: str):
+def _initialize_skill_state(config: AppConfig):
     """
     Discover manifest-based skills and build runtime tools for the UI.
     """
-    resolved_skill_paths = _resolve_skill_paths(config.skill_paths, config_file)
-    skill_registry = SkillRegistry.discover(resolved_skill_paths)
+    skill_registry = SkillRegistry.discover(config.skill_paths)
     skill_runtime = SkillRuntime(
         skill_registry,
         config=config.skill_runtime_config,
@@ -111,7 +92,6 @@ def _initialize_skill_state(config: AppConfig, config_file: str):
         skill_tools.append(build_run_skill_script_tool(skill_runtime))
 
     return skill_registry, skill_tools
-
 
 def run_gradio(
     config: AppConfig,
@@ -172,7 +152,7 @@ def create_gradio_app(config_path: str) -> gr.Blocks:
         Gradio Blocks interface
     """
     config = load_config_from_json(config_path)
-    skill_registry, skill_tools = _initialize_skill_state(config, config_path)
+    skill_registry, skill_tools = _initialize_skill_state(config)
 
     client = MCPGradioClientSession(
         model_config=config.model,
@@ -209,8 +189,7 @@ def gradio_entrypoint(port: int | None, share: bool, config_file: str):
     try:
         print(f"Loading configuration from {config_file}")
         config = load_config_from_json(config_file)
-        skill_registry, skill_tools = _initialize_skill_state(config, config_file)
-
+        skill_registry, skill_tools = _initialize_skill_state(config)
         if not config.interface:
             print(
                 "No Gradio interface settings provided. Make sure your configuration file has an 'interface' section."

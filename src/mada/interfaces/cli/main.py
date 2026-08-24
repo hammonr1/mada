@@ -12,7 +12,6 @@ import asyncio
 import sys
 
 import click
-from pathlib import Path
 from typing import Any, Dict, List
 
 from mada.core.config import AppConfig, OrchestrationConfig, load_config_from_json
@@ -407,21 +406,6 @@ class MADACLIInterface:
         # Note: Cleanup is handled automatically by the 'async with' context manager
 
 
-def _resolve_skill_paths(skill_paths: List[str], config_file: str) -> List[Path]:
-    """
-    Resolve configured skill discovery roots relative to the config file path.
-    """
-    config_dir = Path(config_file).resolve().parent
-    resolved_paths = []
-
-    for raw_path in skill_paths:
-        skill_path = Path(raw_path)
-        if not skill_path.is_absolute():
-            skill_path = config_dir / skill_path
-        resolved_paths.append(skill_path.resolve())
-
-    return resolved_paths
-
 async def async_main(config_file: str, blocking: bool = False):
     """
     Async main entry point for CLI.
@@ -435,8 +419,7 @@ async def async_main(config_file: str, blocking: bool = False):
         config = load_config_from_json(config_file)
 
         # Initialize manifest-based skills
-        resolved_skill_paths = _resolve_skill_paths(config.skill_paths, config_file)
-        skill_registry = SkillRegistry.discover(resolved_skill_paths)
+        skill_registry = SkillRegistry.discover(config.skill_paths)
         skill_runtime = SkillRuntime(
             skill_registry,
             config=config.skill_runtime_config,
