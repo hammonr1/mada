@@ -44,7 +44,13 @@ class MADACLIInterface:
     providing a clean separation between UI and core functionality.
     """
 
-    def __init__(self, config: AppConfig, blocking: bool = False):
+    def __init__(
+        self,
+        config: AppConfig,
+        blocking: bool = False,
+        skill_registry: SkillRegistry = None,
+        skill_tools: List[Any] = None,
+    ):
         """
         Initialize the CLI with configuration.
 
