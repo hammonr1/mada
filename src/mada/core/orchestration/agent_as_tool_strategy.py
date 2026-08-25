@@ -229,6 +229,7 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         )
         orchestrator.session = orchestrator.planning_agent.create_session()
 
+
     def _build_status(
         self,
         orchestrator: "MADAOrchestrator",
@@ -274,6 +275,15 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
             labels.append(f"A2A: {agent_name} - {card['description']}")
         return labels
 
+    def _skill_tool_labels(self, orchestrator: "MADAOrchestrator") -> List[str]:
+        """
+        Build user-facing labels for manifest-based skill tools.
+        """
+        return [
+            f"Skill Tool: {getattr(tool, 'name', getattr(tool, '__name__', 'unknown'))}"
+            for tool in orchestrator.skill_tools
+        ]
+
     async def initialize(
         self,
         orchestrator: "MADAOrchestrator",
@@ -298,6 +308,7 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
             orchestrator, participant_configs
         )
         all_tools.extend(self._remote_a2a_tool_labels(orchestrator))
+        all_tools.extend(self._skill_tool_labels(orchestrator))
         active_participant_configs = self._resolve_active_participant_configs(
             orchestrator, participant_configs
         )

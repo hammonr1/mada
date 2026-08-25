@@ -496,23 +496,7 @@ Both `skill_paths` and `skill_runtime` are **top-level** keys in your configurat
 
 Values are `approve` or `deny`.
 
-### Example
-
-```json
-"skill_paths": [
-    "./skills"
-],
-"skill_runtime": {
-    "default_script_timeout_seconds": 30,
-    "max_resource_bytes": 65536,
-    "max_script_output_bytes": 32768,
-    "default_skill_script_approval_mode": "prompt",
-    "skill_script_approval_modes": {
-        "documentation-helper": "approve",
-        "documentation-helper:scripts/publish.py": "deny"
-    }
-}
-```
+A complete runnable example is available in `configs/example_skills.json`.
 
 ### How Skills Configuration Works
 
