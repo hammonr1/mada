@@ -10,7 +10,9 @@ from mada.core.skills.skill_manifest import (
 )
 
 
-def _write_skill(root: Path, name: str, frontmatter: str, body: str = "Do the thing.") -> Path:
+def _write_skill(
+    root: Path, name: str, frontmatter: str, body: str = "Do the thing."
+) -> Path:
     """
     Write a minimal skill directory containing a SKILL.md manifest.
 
@@ -88,7 +90,9 @@ class TestParseSkillManifest:
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("No frontmatter here.\n", encoding="utf-8")
 
-        with pytest.raises(SkillManifestError, match="must begin with YAML frontmatter"):
+        with pytest.raises(
+            SkillManifestError, match="must begin with YAML frontmatter"
+        ):
             parse_skill_manifest(skill_dir)
 
     def test_unterminated_frontmatter_raises(self, tmp_path: Path):

@@ -583,16 +583,16 @@ class MADAOrchestrator(MCPAgentManager):
             # Default behavior if no PlanningAgent config is provided
             base_instructions = """You are a planning agent for the MADA multi-agent system.
 
-Your specialist agents (available as tools) can be delegated tasks. 
+Your specialist agents (available as tools) can be delegated tasks.
 """
 
         skill_guidance = ""
         if skill_advertisement:
-                skill_guidance = f"""
+            skill_guidance = f"""
 Manifest-based skills available via runtime tools:
 {skill_advertisement}
 """
-                
+
         # Always append up to date team description and guidelines so the planning
         # agent knows how to use the tools.
         instructions = f"""{base_instructions}
@@ -730,7 +730,6 @@ Guidelines:
         return "\n".join(
             f"    {summary}" for summary in self.skill_registry.skill_summaries()
         )
-
 
     def _generate_remote_a2a_description(self) -> str:
         """

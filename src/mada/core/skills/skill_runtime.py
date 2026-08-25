@@ -1,6 +1,7 @@
 """
 Runtime helpers for manifest-based skills.
 """
+
 import logging
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from .skill_registry import (
 
 LOG = logging.getLogger(__name__)
 
+
 class SkillRuntimeError(Exception):
     """Raised when runtime access to manifest-based skill content fails."""
 
@@ -37,7 +39,7 @@ class SkillRuntime:
         self,
         skill_registry: SkillRegistry,
         config: SkillRuntimeConfig | None = None,
-                script_approver: SkillScriptApprover | None = None,
+        script_approver: SkillScriptApprover | None = None,
     ):
         """
         Initialize runtime access to discovered skills.

@@ -219,6 +219,7 @@ def _resolve_skill_paths(skill_paths: List[str], config_file: str) -> List[Path]
 
     return resolved_paths
 
+
 def _get_a2a_config_blocks(
     config_dict: Dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -252,7 +253,7 @@ def load_config_from_json(path: str) -> AppConfig:
     with open(config_path, "r") as f:
         config_dict = json.load(f)
 
-        config = AppConfig.from_dict(
+    config = AppConfig.from_dict(
         config_dict,
         a2a_card_path_base=config_path.parent,
     )

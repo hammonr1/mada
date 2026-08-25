@@ -229,7 +229,6 @@ class AgentAsToolOrchestrationStrategy(BaseOrchestrationStrategy):
         )
         orchestrator.session = orchestrator.planning_agent.create_session()
 
-
     def _build_status(
         self,
         orchestrator: "MADAOrchestrator",

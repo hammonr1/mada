@@ -12,6 +12,7 @@ from .skill_manifest import parse_skill_manifest
 
 LOG = logging.getLogger(__name__)
 
+
 class SkillRegistryError(Exception):
     """Raised when manifest-based skill discovery or lookup fails."""
 

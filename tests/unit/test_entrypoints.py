@@ -348,7 +348,8 @@ class TestMADAGradioCmd:
 
                 mock_load.assert_called_once_with("config.json")
                 mock_run.assert_called_once_with(
-                    config, skill_registry=ANY, skill_tools=ANY)
+                    config, skill_registry=ANY, skill_tools=ANY
+                )
                 # Should not call sys.exit on success
                 mock_exit.assert_not_called()
                 # Port / share unchanged when no overrides
@@ -380,7 +381,8 @@ class TestMADAGradioCmd:
                 assert config.interface.share is True
 
                 mock_run.assert_called_once_with(
-                    config, skill_registry=ANY, skill_tools=ANY)
+                    config, skill_registry=ANY, skill_tools=ANY
+                )
                 mock_exit.assert_not_called()
 
         def test_gradio_entrypoint_exits_if_no_interface_config(

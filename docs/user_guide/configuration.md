@@ -80,7 +80,7 @@ MADA includes a special agent called the **planning agent**. This agent is autom
 The default, base instructions for the planning agent are:
 
 ```python
---8<-- "src/mada/core/orchestrator.py:200:203"
+--8 < --"src/mada/core/orchestrator.py:200:203"
 ```
 
 If you'd like to modify these instructions, add an agent entry to the `"agents"` list in your configuration file with `"agent_name": "PlanningAgent"`. For example:
@@ -99,7 +99,7 @@ If you'd like to modify these instructions, add an agent entry to the `"agents"`
     The planning agent will always include core instructions that cannot be modified. These instructions describe each specialist agent you define, and include the following guidelines:
 
     ```python
-    --8<-- "src/mada/core/orchestrator.py:212:216"
+    --8 < --"src/mada/core/orchestrator.py:212:216"
     ```
 
 ## MCP Server Configuration

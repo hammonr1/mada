@@ -104,9 +104,7 @@ class TestReadSkillResource:
         _write_skill(tmp_path, resources={"references/guide.md": "# Guide\n"})
 
         with pytest.raises(SkillRuntimeError, match="parent-directory traversal"):
-            _runtime(tmp_path).read_skill_resource(
-                "demo-skill", "../../etc/passwd"
-            )
+            _runtime(tmp_path).read_skill_resource("demo-skill", "../../etc/passwd")
 
     def test_absolute_path_raises(self, tmp_path: Path):
         """Test that an absolute resource path is rejected."""
@@ -120,7 +118,9 @@ class TestReadSkillResource:
         _write_skill(tmp_path, resources={"references/guide.md": "x" * 100})
         config = SkillRuntimeConfig(max_resource_bytes=10)
 
-        with pytest.raises(SkillRuntimeError, match="exceeds the configured size limit"):
+        with pytest.raises(
+            SkillRuntimeError, match="exceeds the configured size limit"
+        ):
             _runtime(tmp_path, config=config).read_skill_resource(
                 "demo-skill", "references/guide.md"
             )
@@ -140,7 +140,9 @@ class TestRunSkillScript:
 
     def test_approved_script_runs(self, tmp_path: Path):
         """Test that an approved script executes and captures stdout."""
-        _write_skill(tmp_path, scripts={"scripts/run.py": "print('hello from skill')\n"})
+        _write_skill(
+            tmp_path, scripts={"scripts/run.py": "print('hello from skill')\n"}
+        )
         approver = PolicyBasedSkillScriptApprover(default_mode="approve")
 
         result = _runtime(tmp_path, script_approver=approver).run_skill_script(
@@ -188,9 +190,7 @@ class TestApprovalPolicy:
     def test_deny_all_approver_denies(self):
         """Test that the default approver denies every request."""
         approver = DenyAllSkillScriptApprover()
-        decision = approver.approve_skill_script(
-            _approval_request()
-        )
+        decision = approver.approve_skill_script(_approval_request())
 
         assert decision.approved is False
 
