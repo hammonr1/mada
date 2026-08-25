@@ -88,10 +88,12 @@ class MCPAgentManager:
         """
         agent_tools = list(tools or [])
         agent_tools.extend(self.skill_tools)
+        agent_kwargs = dict(agent_config.extra or {})
+        agent_kwargs.update(kwargs)
 
         return self.model_client.as_agent(
             name=agent_config.agent_name,
             instructions=agent_config.instructions,
-            tools=tools or [],
-            **kwargs,
+            tools=agent_tools,
+            **agent_kwargs,
         )

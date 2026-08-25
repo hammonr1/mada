@@ -4,12 +4,19 @@
 
 ### Added
 - DOI link to README
+- Magentic Orchestration Functionality
+- Safeguards for the orchestration switching and database consistency for async functionality
+- Test coverage for Magentic orchestration
 
 ### Changed
 - OpenAI-compatible model configs and streamable MCP server configs now support a `verify` setting for TLS verification control.
 
 ### Fixed
 - OpenAI-compatible HTTP clients and streamable MCP HTTP clients now honor configured `verify` values when resolving TLS verification.
+- Specialist agents now honor agent-level extra settings, including default_options, matching the existing PlanningAgent behavior.
+- Wrong task planning from multi-turn conversations
+- Tool call detection in nested Agent Framework event structures (including typed records)
+- Incomplete streaming when final result differs from accumulated chunks
 
 ## 0.2.0 - 2026-07-07
 
