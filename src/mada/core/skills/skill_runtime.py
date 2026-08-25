@@ -134,7 +134,6 @@ class SkillRuntime:
             f"{'approved' if decision.approved else 'denied'}: {decision.reason}"
         )
         if not decision.approved:
-            LOG.warning(reason)
             return {
                 "status": "denied",
                 "skill_name": skill_name,
