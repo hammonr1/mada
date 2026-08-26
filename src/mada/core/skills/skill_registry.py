@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Tuple
 
 from .skill_manifest import parse_skill_manifest
+from .utils import is_tool_allowed
 
 LOG = logging.getLogger(__name__)
 
@@ -149,7 +150,8 @@ class SkillRegistry:
     def has_skills_for_tool(self, tool_name: str = "load_skill") -> bool:
         """Return True when at least one discovered skill allows the tool."""
         return any(
-            self._skill_allows_tool(skill, tool_name) for skill in self._skills.values()
+            is_tool_allowed(skill.allowed_tools, tool_name)
+            for skill in self._skills.values()
         )
 
     def has_resources(self) -> bool:
@@ -163,14 +165,14 @@ class SkillRegistry:
     def has_resources_for_tool(self, tool_name: str = "read_skill_resource") -> bool:
         """Return True when at least one skill has resources and allows the tool."""
         return any(
-            skill.resources and self._skill_allows_tool(skill, tool_name)
+            is_tool_allowed(skill.allowed_tools, tool_name)
             for skill in self._skills.values()
         )
 
     def has_scripts_for_tool(self, tool_name: str = "run_skill_script") -> bool:
         """Return True when at least one skill has scripts and allows the tool."""
         return any(
-            skill.scripts and self._skill_allows_tool(skill, tool_name)
+            is_tool_allowed(skill.allowed_tools, tool_name)
             for skill in self._skills.values()
         )
 
@@ -203,24 +205,6 @@ class SkillRegistry:
     def skill_summaries(self) -> List[str]:
         """Return compact 'name: description' summaries for prompt advertisement."""
         return [f"{skill.name}: {skill.description}" for skill in self.list_skills()]
-
-    @staticmethod
-    def _skill_allows_tool(skill: DiscoveredSkill, tool_name: str) -> bool:
-        """
-        Return True when a skill permits use of the named runtime tool.
-
-        A skill with no `allowed_tools` entry permits every tool.
-
-        Args:
-            skill: Discovered skill to check.
-            tool_name: Runtime tool name.
-
-        Returns:
-            True when the tool is permitted for this skill.
-        """
-        if not skill.allowed_tools:
-            return True
-        return tool_name in skill.allowed_tools
 
     @staticmethod
     def _is_hidden_path(path: Path) -> bool:

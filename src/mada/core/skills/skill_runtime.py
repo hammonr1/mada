@@ -13,6 +13,7 @@ from .skill_manifest import (
     SkillManifestError,
     parse_skill_manifest,
 )
+from .utils import is_tool_allowed
 from .skill_approval import (
     DenyAllSkillScriptApprover,
     SkillScriptApprovalRequest,
@@ -106,7 +107,7 @@ class SkillRuntime:
         except SkillRegistryError as exc:
             raise SkillRuntimeError(str(exc)) from exc
 
-        if not self._is_tool_allowed(skill.allowed_tools, "run_skill_script"):
+        if not is_tool_allowed(skill.allowed_tools, "run_skill_script"):
             reason = (
                 f"Skill '{skill_name}' does not allow use of tool 'run_skill_script' "
                 "under its manifest policy."
@@ -252,18 +253,13 @@ class SkillRuntime:
                 f"{item_label} '{expected_relative_path}' resolved outside its expected skill-owned root."
             )
 
-    def _is_tool_allowed(self, allowed_tools: list[str], tool_name: str) -> bool:
-        if not allowed_tools:
-            return True
-        return tool_name in allowed_tools
-
     def _require_allowed_tool(
         self,
         skill_name: str,
         allowed_tools: list[str],
         tool_name: str,
     ) -> None:
-        if self._is_tool_allowed(allowed_tools, tool_name):
+        if is_tool_allowed(allowed_tools, tool_name):
             return
         raise SkillRuntimeError(
             f"Skill '{skill_name}' does not allow use of tool '{tool_name}' "
