@@ -54,155 +54,24 @@ class DiscoveredSkill:
     scripts: Dict[str, DiscoveredSkillScript] = field(default_factory=dict)
 
 
-TEXT_RESOURCE_EXTENSIONS = {
-    ".csv",
-    ".json",
-    ".md",
-    ".rst",
-    ".tsv",
-    ".txt",
-    ".yaml",
-    ".yml",
-}
-
-SUPPORTED_SCRIPT_RUNNERS = {
-    ".py": "python",
-    ".sh": "shell",
-}
-
-
-def _is_hidden_path(path: Path) -> bool:
-    """
-    Return True when any component of a path is hidden.
-
-    Args:
-        path: Relative path to inspect.
-
-    Returns:
-        True when any path component begins with a dot.
-    """
-    return any(part.startswith(".") for part in path.parts)
-
-
-def _is_text_readable(resource_path: Path, media_type: str) -> bool:
-    """
-    Return True when a resource can be read as text.
-
-    Args:
-        resource_path: Path to the resource file.
-        media_type: Guessed media type for the resource.
-
-    Returns:
-        True when the extension is a known text type or the media type is text.
-    """
-    if resource_path.suffix.lower() in TEXT_RESOURCE_EXTENSIONS:
-        return True
-    return media_type.startswith("text/")
-
-
-def _iter_skill_files(
-    skill_root: Path,
-    subdir_name: str,
-    label: str,
-) -> Iterator[Tuple[Path, str]]:
-    """
-    Yield visible files under one skill-owned subdirectory.
-
-    Symlinks, directories, and hidden paths are skipped. A missing
-    subdirectory yields nothing.
-
-    Args:
-        skill_root: Root directory of the skill.
-        subdir_name: Skill-owned subdirectory to walk, such as "scripts".
-        label: Human-readable name used in error messages.
-
-    Yields:
-        Tuples of the resolved candidate path and its normalized POSIX path
-        relative to the skill root.
-
-    Raises:
-        SkillRegistryError: If the subdirectory exists but is not a directory.
-    """
-    subdir_root = skill_root / subdir_name
-    if not subdir_root.exists():
-        return
-    if not subdir_root.is_dir():
-        raise SkillRegistryError(
-            f"Skill {label} root '{subdir_root}' exists but is not a directory."
-        )
-
-    for candidate in sorted(subdir_root.rglob("*")):
-        if candidate.is_symlink() or not candidate.is_file():
-            continue
-
-        relative_path = candidate.relative_to(skill_root)
-        if _is_hidden_path(relative_path):
-            continue
-
-        yield candidate, relative_path.as_posix()
-
-
-def _discover_skill_resources(skill_root: Path) -> Dict[str, DiscoveredSkillResource]:
-    """
-    Index readable resource files owned by one skill.
-
-    Args:
-        skill_root: Root directory of the skill.
-
-    Returns:
-        Mapping of normalized relative paths to discovered resources.
-    """
-    resources: Dict[str, DiscoveredSkillResource] = {}
-
-    for kind in ("references", "assets"):
-        for candidate, normalized_path in _iter_skill_files(
-            skill_root, kind, "resource"
-        ):
-            media_type = (
-                mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
-            )
-            resources[normalized_path] = DiscoveredSkillResource(
-                path=normalized_path,
-                kind=kind,
-                file_path=candidate.resolve(),
-                size_bytes=candidate.stat().st_size,
-                media_type=media_type,
-                text_readable=_is_text_readable(candidate, media_type),
-            )
-
-    return resources
-
-
-def _discover_skill_scripts(skill_root: Path) -> Dict[str, DiscoveredSkillScript]:
-    """
-    Index executable script files owned by one skill.
-
-    Args:
-        skill_root: Root directory of the skill.
-
-    Returns:
-        Mapping of normalized relative paths to discovered scripts.
-    """
-    scripts: Dict[str, DiscoveredSkillScript] = {}
-
-    for candidate, normalized_path in _iter_skill_files(
-        skill_root, "scripts", "scripts"
-    ):
-        runner = SUPPORTED_SCRIPT_RUNNERS.get(candidate.suffix.lower())
-        if not runner:
-            continue
-
-        scripts[normalized_path] = DiscoveredSkillScript(
-            path=normalized_path,
-            runner=runner,
-            file_path=candidate.resolve(),
-        )
-
-    return scripts
-
-
 class SkillRegistry:
     """Registry of manifest-discovered skills keyed by unique skill name."""
+
+    TEXT_RESOURCE_EXTENSIONS = {
+        ".csv",
+        ".json",
+        ".md",
+        ".rst",
+        ".tsv",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }
+
+    SUPPORTED_SCRIPT_RUNNERS = {
+        ".py": "python",
+        ".sh": "shell",
+    }
 
     def __init__(self, skills: Iterable[DiscoveredSkill] = ()):
         self._skills: Dict[str, DiscoveredSkill] = {}
@@ -251,8 +120,8 @@ class SkillRegistry:
                         compatibility=manifest.compatibility,
                         allowed_tools=manifest.allowed_tools,
                         metadata=manifest.metadata,
-                        resources=_discover_skill_resources(manifest.path),
-                        scripts=_discover_skill_scripts(manifest.path),
+                        resources=cls._discover_skill_resources(manifest.path),
+                        scripts=cls._discover_skill_scripts(manifest.path),
                     )
                 )
 
@@ -352,3 +221,139 @@ class SkillRegistry:
         if not skill.allowed_tools:
             return True
         return tool_name in skill.allowed_tools
+
+    @staticmethod
+    def _is_hidden_path(path: Path) -> bool:
+        """
+        Return True when any component of a path is hidden.
+
+        Args:
+            path: Relative path to inspect.
+
+        Returns:
+            True when any path component begins with a dot.
+        """
+        return any(part.startswith(".") for part in path.parts)
+
+    @classmethod
+    def _is_text_readable(cls, resource_path: Path, media_type: str) -> bool:
+        """
+        Return True when a resource can be read as text.
+
+        Args:
+            resource_path: Path to the resource file.
+            media_type: Guessed media type for the resource.
+
+        Returns:
+            True when the extension is a known text type or the media type is text.
+        """
+        if resource_path.suffix.lower() in cls.TEXT_RESOURCE_EXTENSIONS:
+            return True
+        return media_type.startswith("text/")
+
+    @classmethod
+    def _iter_skill_files(
+        cls,
+        skill_root: Path,
+        subdir_name: str,
+        label: str,
+    ) -> Iterator[Tuple[Path, str]]:
+        """
+        Yield visible files under one skill-owned subdirectory.
+
+        Symlinks, directories, and hidden paths are skipped. A missing
+        subdirectory yields nothing.
+
+        Args:
+            skill_root: Root directory of the skill.
+            subdir_name: Skill-owned subdirectory to walk, such as "scripts".
+            label: Human-readable name used in error messages.
+
+        Yields:
+            Tuples of the resolved candidate path and its normalized POSIX path
+            relative to the skill root.
+
+        Raises:
+            SkillRegistryError: If the subdirectory exists but is not a directory.
+        """
+        subdir_root = skill_root / subdir_name
+        if not subdir_root.exists():
+            return
+        if not subdir_root.is_dir():
+            raise SkillRegistryError(
+                f"Skill {label} root '{subdir_root}' exists but is not a directory."
+            )
+
+        for candidate in sorted(subdir_root.rglob("*")):
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+
+            relative_path = candidate.relative_to(skill_root)
+            if cls._is_hidden_path(relative_path):
+                continue
+
+            yield candidate, relative_path.as_posix()
+
+    @classmethod
+    def _discover_skill_resources(
+        cls, skill_root: Path
+    ) -> Dict[str, DiscoveredSkillResource]:
+        """
+        Index readable resource files owned by one skill.
+
+        Args:
+            skill_root: Root directory of the skill.
+
+        Returns:
+            Mapping of normalized relative paths to discovered resources.
+        """
+        resources: Dict[str, DiscoveredSkillResource] = {}
+
+        for kind in ("references", "assets"):
+            for candidate, normalized_path in cls._iter_skill_files(
+                skill_root, kind, "resource"
+            ):
+                media_type = (
+                    mimetypes.guess_type(candidate.name)[0]
+                    or "application/octet-stream"
+                )
+                resources[normalized_path] = DiscoveredSkillResource(
+                    path=normalized_path,
+                    kind=kind,
+                    file_path=candidate.resolve(),
+                    size_bytes=candidate.stat().st_size,
+                    media_type=media_type,
+                    text_readable=cls._is_text_readable(candidate, media_type),
+                )
+
+        return resources
+
+    @classmethod
+    def _discover_skill_scripts(
+        cls, skill_root: Path
+    ) -> Dict[str, DiscoveredSkillScript]:
+        """
+        Index executable script files owned by one skill.
+
+        Args:
+            skill_root: Root directory of the skill.
+
+        Returns:
+            Mapping of normalized relative paths to discovered scripts.
+        """
+        scripts: Dict[str, DiscoveredSkillScript] = {}
+
+        for candidate, normalized_path in cls._iter_skill_files(
+            skill_root, "scripts", "scripts"
+        ):
+            runner = cls.SUPPORTED_SCRIPT_RUNNERS.get(candidate.suffix.lower())
+            if not runner:
+                continue
+
+            scripts[normalized_path] = DiscoveredSkillScript(
+                path=normalized_path,
+                runner=runner,
+                file_path=candidate.resolve(),
+            )
+
+        return scripts
