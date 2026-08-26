@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import logging
 import mimetypes
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, Iterator, List, Tuple
 
 from .skill_manifest import parse_skill_manifest
 
@@ -100,27 +100,64 @@ def _is_text_readable(resource_path: Path, media_type: str) -> bool:
     return media_type.startswith("text/")
 
 
+def _iter_skill_files(
+    skill_root: Path,
+    subdir_name: str,
+    label: str,
+) -> Iterator[Tuple[Path, str]]:
+    """
+    Yield visible files under one skill-owned subdirectory.
+
+    Symlinks, directories, and hidden paths are skipped. A missing
+    subdirectory yields nothing.
+
+    Args:
+        skill_root: Root directory of the skill.
+        subdir_name: Skill-owned subdirectory to walk, such as "scripts".
+        label: Human-readable name used in error messages.
+
+    Yields:
+        Tuples of the resolved candidate path and its normalized POSIX path
+        relative to the skill root.
+
+    Raises:
+        SkillRegistryError: If the subdirectory exists but is not a directory.
+    """
+    subdir_root = skill_root / subdir_name
+    if not subdir_root.exists():
+        return
+    if not subdir_root.is_dir():
+        raise SkillRegistryError(
+            f"Skill {label} root '{subdir_root}' exists but is not a directory."
+        )
+
+    for candidate in sorted(subdir_root.rglob("*")):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+
+        relative_path = candidate.relative_to(skill_root)
+        if _is_hidden_path(relative_path):
+            continue
+
+        yield candidate, relative_path.as_posix()
+
+
 def _discover_skill_resources(skill_root: Path) -> Dict[str, DiscoveredSkillResource]:
+    """
+    Index readable resource files owned by one skill.
+
+    Args:
+        skill_root: Root directory of the skill.
+
+    Returns:
+        Mapping of normalized relative paths to discovered resources.
+    """
     resources: Dict[str, DiscoveredSkillResource] = {}
 
     for kind in ("references", "assets"):
-        resource_root = skill_root / kind
-        if not resource_root.exists():
-            continue
-        if not resource_root.is_dir():
-            raise SkillRegistryError(
-                f"Skill resource root '{resource_root}' exists but is not a directory."
-            )
-
-        for candidate in sorted(resource_root.rglob("*")):
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-
-            relative_path = candidate.relative_to(skill_root)
-            if _is_hidden_path(relative_path):
-                continue
-
-            normalized_path = relative_path.as_posix()
+        for candidate, normalized_path in _iter_skill_files(
+            skill_root, kind, "resource"
+        ):
             media_type = (
                 mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
             )
@@ -137,28 +174,24 @@ def _discover_skill_resources(skill_root: Path) -> Dict[str, DiscoveredSkillReso
 
 
 def _discover_skill_scripts(skill_root: Path) -> Dict[str, DiscoveredSkillScript]:
+    """
+    Index executable script files owned by one skill.
+
+    Args:
+        skill_root: Root directory of the skill.
+
+    Returns:
+        Mapping of normalized relative paths to discovered scripts.
+    """
     scripts: Dict[str, DiscoveredSkillScript] = {}
-    scripts_root = skill_root / "scripts"
-    if not scripts_root.exists():
-        return scripts
-    if not scripts_root.is_dir():
-        raise SkillRegistryError(
-            f"Skill scripts root '{scripts_root}' exists but is not a directory."
-        )
 
-    for candidate in sorted(scripts_root.rglob("*")):
-        if candidate.is_symlink() or not candidate.is_file():
-            continue
-
-        relative_path = candidate.relative_to(skill_root)
-        if _is_hidden_path(relative_path):
-            continue
-
+    for candidate, normalized_path in _iter_skill_files(
+        skill_root, "scripts", "scripts"
+    ):
         runner = SUPPORTED_SCRIPT_RUNNERS.get(candidate.suffix.lower())
         if not runner:
             continue
 
-        normalized_path = relative_path.as_posix()
         scripts[normalized_path] = DiscoveredSkillScript(
             path=normalized_path,
             runner=runner,
