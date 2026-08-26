@@ -484,7 +484,6 @@ If you are running MADA in [Gradio mode](./usage/gradio.md), you can customize t
         "theme": "dark"
     }
 }
-
 ```
 
 ## (Optional) Skills Configuration
@@ -497,7 +496,7 @@ Both `skill_paths` and `skill_runtime` are **top-level** keys in your configurat
 
 | Field Name      | Description                                                        | Required? | Default |
 | --------------- | ------------------------------------------------------------------ | --------- | ------- |
-| `skill_paths`   | List of directories to search for skill folders containing `SKILL.md`. Relative paths are resolved against the configuration file's directory. | No | `[]` |
+| `skill_paths`   | List of directories to search for skill folders containing `SKILL.md`. Each path is searched recursively. Relative paths are resolved against the configuration file's directory. | No | `[]` |
 | `skill_runtime` | Runtime settings for reading skill resources and executing scripts. | No        | None    |
 
 ### `skill_runtime` Fields
@@ -530,7 +529,9 @@ A complete runnable example is available in `configs/example_skills.json`.
 
 ### How Skills Configuration Works
 
-When MADA starts, it scans each configured path in `skill_paths` for directories containing a `SKILL.md` manifest. If a valid skill is found, MADA indexes the manifest along with any supported resources and scripts in that folder.
+When MADA starts, it scans each configured path in `skill_paths` recursively for directories containing a `SKILL.md` manifest, so skills may be nested at any depth. If a valid skill is found, MADA indexes the manifest along with any supported resources and scripts in that folder.
+
+Skill names must be unique across all configured paths. Two skills with the same name cause startup to fail, even if they come from different roots.
 
 This allows agents to load reusable skill instructions on demand, read skill-owned text resources, and optionally execute skill-owned scripts according to the configured runtime approval policy.
 
