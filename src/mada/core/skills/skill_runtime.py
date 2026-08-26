@@ -3,6 +3,7 @@ Runtime helpers for manifest-based skills.
 """
 
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -354,10 +355,12 @@ class SkillRuntime:
         if script.runner == "python":
             return [sys.executable, str(script.file_path), *normalized_args]
         if script.runner == "shell":
-            return ["/bin/bash", str(script.file_path), *normalized_args]
-        raise SkillRuntimeError(
-            f"Script '{script.path}' uses unsupported runner '{script.runner}'."
-        )
+            bash = shutil.which("bash")
+            if not bash:
+                raise SkillRuntimeError(
+                    "Cannot run shell skill scripts: bash is not installed or not on PATH."
+                )
+            return [bash, str(script.file_path), *normalized_args]
 
     def _truncate_output(self, data: bytes | str | None) -> tuple[str, bool]:
         if data is None:
