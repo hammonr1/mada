@@ -527,6 +527,26 @@ Values are `approve` or `deny`.
 
 A complete runnable example is available in `configs/example_skills.json`.
 
+### Example
+
+```json
+"skills": {
+    "skill_paths": [
+        "./skills"
+    ],
+    "skill_runtime": {
+        "default_script_timeout_seconds": 30,
+        "max_resource_bytes": 65536,
+        "max_script_output_bytes": 32768,
+        "default_skill_script_approval_mode": "prompt",
+        "skill_script_approval_modes": {
+            "documentation-helper": "approve",
+            "documentation-helper:scripts/publish.py": "deny"
+        }
+    }
+}
+```
+
 ### How Skills Configuration Works
 
 When MADA starts, it scans each configured path in `skill_paths` recursively for directories containing a `SKILL.md` manifest, so skills may be nested at any depth. If a valid skill is found, MADA indexes the manifest along with any supported resources and scripts in that folder.
