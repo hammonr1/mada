@@ -43,7 +43,8 @@ from mada.core.config.a2a import (
     load_a2a_agents_config,
     load_a2a_config,
 )
-from mada.core.config.app import AppConfig, SkillRuntimeConfig, load_config_from_json
+from mada.core.config.app import AppConfig, load_config_from_json
+from mada.core.config.skills import SkillRuntimeConfig
 from mada.core.config.database import (
     DatabaseConfig,
     PostgreSQLConfig,

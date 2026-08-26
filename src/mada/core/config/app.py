@@ -33,31 +33,12 @@ from mada.core.config.orchestration import (
     OrchestrationConfig,
     load_orchestration_config,
 )
+from mada.core.config.skills import (
+    SkillRuntimeConfig,
+    load_skills_config,
+)
 
 LOG = logging.getLogger("mada-interface")
-
-
-@dataclass
-class SkillRuntimeConfig:
-    """
-    Runtime policy configuration for manifest-based skills.
-
-    Attributes:
-        default_script_timeout_seconds: Default timeout for skill script execution.
-        max_script_output_bytes: Maximum captured stdout/stderr size for a skill script.
-        max_resource_bytes: Maximum readable size for a skill resource file.
-        default_skill_script_approval_mode: Approval mode applied when no
-            specific rule matches a script. One of "prompt", "approve", or "deny".
-        skill_script_approval_modes: Per-skill and per-script approval overrides.
-            Keys are matched most specific first: "skill_name:script_name", then
-            "skill_name", then "*" as a catch-all. Values are "approve" or "deny".
-    """
-
-    default_script_timeout_seconds: int = 30
-    max_script_output_bytes: int = 32 * 1024
-    max_resource_bytes: int = 32 * 1024
-    default_skill_script_approval_mode: str = "prompt"
-    skill_script_approval_modes: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -97,6 +78,7 @@ class AppConfig:
         cls,
         config_dict: Dict[str, Any],
         a2a_card_path_base: str | Path | None = None,
+        config_dir: str | Path | None = None,
     ) -> "AppConfig":
         """
         Create an AppConfig instance from a dictionary.
@@ -162,26 +144,26 @@ class AppConfig:
             app_conf["mcp_servers"] = mcp_servers_cfg
 
         # Load skill paths (optional)
-        skill_paths_entry, skill_runtime_entry = _get_skills_config_blocks(config_dict)
-        if skill_paths_entry:
-            if not isinstance(skill_paths_entry, list):
-                raise ValueError("'skills.skill_paths' must be a list of paths.")
-            skill_paths = []
-            for raw_path in skill_paths_entry:
-                if not isinstance(raw_path, str) or not raw_path.strip():
-                    raise ValueError(
-                        "Each entry in 'skills.skill_paths' must be a non-empty path."
-                    )
-                skill_paths.append(raw_path.strip())
-            app_conf["skill_paths"] = skill_paths
+        if "skill_paths" in config_dict or "skill_runtime" in config_dict:
+            raise ValueError(
+                "Use 'skills.skill_paths' and 'skills.skill_runtime' for skills configuration"
+            )
+        skills_cfg = load_skills_config(
+            config_dict.get("skills"), config_dir=config_dir
+        )
+        app_conf["skill_paths"] = skills_cfg.skill_paths
+        app_conf["skill_runtime_config"] = skills_cfg.skill_runtime
 
-        # Load skill runtime configuration (optional)
-        if skill_runtime_entry:
-            if not isinstance(skill_runtime_entry, dict):
-                raise ValueError(
-                    "'skills.skill_runtime' must be a mapping of runtime settings."
-                )
-            app_conf["skill_runtime_config"] = SkillRuntimeConfig(**skill_runtime_entry)
+        # Load skills configuration (optional)
+        if "skill_paths" in config_dict or "skill_runtime" in config_dict:
+            raise ValueError(
+                "Use 'skills.skill_paths' and 'skills.skill_runtime' for skills configuration"
+            )
+        skills_cfg = load_skills_config(
+            config_dict.get("skills"), config_dir=config_dir
+        )
+        app_conf["skill_paths"] = skills_cfg.skill_paths
+        app_conf["skill_runtime_config"] = skills_cfg.skill_runtime
 
         # Load interface configuration (optional for multiagent app)
         interface_entry = config_dict.get("interface")
@@ -190,64 +172,6 @@ class AppConfig:
             app_conf["interface"] = interface_cfg
 
         return cls(**app_conf)
-
-
-def _resolve_skill_paths(skill_paths: List[str], config_file: str) -> List[Path]:
-    """
-    Resolve skill discovery roots relative to the configuration file.
-
-    Relative entries are interpreted relative to the directory containing the
-    configuration file so every interface receives absolute paths.
-
-    Args:
-        skill_paths: Raw skill path strings from the configuration.
-        config_file: Path to the configuration file they came from.
-
-    Returns:
-        Absolute, resolved paths to each configured skill discovery root.
-    """
-    config_dir = Path(config_file).resolve().parent
-    resolved_paths = []
-
-    for raw_path in skill_paths:
-        skill_path = Path(raw_path)
-        if not skill_path.is_absolute():
-            skill_path = config_dir / skill_path
-        resolved_paths.append(skill_path.resolve())
-
-    return resolved_paths
-
-
-def _get_skills_config_blocks(
-    config_dict: Dict[str, Any],
-) -> tuple[list[Any] | None, dict[str, Any] | None]:
-    """
-    Return skill discovery paths and runtime settings from nested config.
-
-    Args:
-        config_dict: Raw application configuration mapping.
-
-    Returns:
-        Tuple of the raw `skill_paths` list and `skill_runtime` mapping, each
-        None when not configured.
-
-    Raises:
-        ValueError: If the legacy top-level keys are used, or `skills` is not
-            an object.
-    """
-    if "skill_paths" in config_dict or "skill_runtime" in config_dict:
-        raise ValueError(
-            "Use 'skills.skill_paths' and 'skills.skill_runtime' for skills configuration"
-        )
-
-    skills_section = config_dict.get("skills")
-    if skills_section is None:
-        return None, None
-
-    if not isinstance(skills_section, dict):
-        raise ValueError("'skills' must be an object")
-
-    return skills_section.get("skill_paths"), skills_section.get("skill_runtime")
 
 
 def _get_a2a_config_blocks(
@@ -286,7 +210,7 @@ def load_config_from_json(path: str) -> AppConfig:
     config = AppConfig.from_dict(
         config_dict,
         a2a_card_path_base=config_path.parent,
+        config_dir=config_path.parent,
     )
-    config.skill_paths = _resolve_skill_paths(config.skill_paths, path)
 
     return config

@@ -345,7 +345,7 @@ class TestSkillsConfig:
             config.skill_runtime_config.default_skill_script_approval_mode == "prompt"
         )
 
-    def test_skills_block_is_parsed(self):
+    def test_skills_block_is_parsed(self, tmp_path: Path):
         """Test that a nested skills block populates paths and runtime settings."""
         config_dict = self._base_config()
         config_dict["skills"] = {
@@ -357,9 +357,9 @@ class TestSkillsConfig:
             },
         }
 
-        config = AppConfig.from_dict(config_dict)
+        config = AppConfig.from_dict(config_dict, config_dir=tmp_path)
 
-        assert config.skill_paths == ["./skills"]
+        assert config.skill_paths == [(tmp_path / "skills").resolve()]
         assert config.skill_runtime_config.default_script_timeout_seconds == 60
         assert config.skill_runtime_config.default_skill_script_approval_mode == "deny"
         assert config.skill_runtime_config.skill_script_approval_modes == {
@@ -399,3 +399,24 @@ class TestSkillsConfig:
 
         with pytest.raises(ValueError, match="must be a non-empty path"):
             AppConfig.from_dict(config_dict)
+
+    def test_relative_skill_paths_resolve_against_config_dir(self, tmp_path: Path):
+        """Test that relative skill paths resolve against the config directory."""
+        config_dict = self._base_config()
+        config_dict["skills"] = {"skill_paths": ["./skills", "../shared-skills"]}
+
+        config = AppConfig.from_dict(config_dict, config_dir=tmp_path)
+
+        assert config.skill_paths == [
+            (tmp_path / "skills").resolve(),
+            (tmp_path.parent / "shared-skills").resolve(),
+        ]
+
+    def test_absolute_skill_paths_are_preserved(self, tmp_path: Path):
+        """Test that absolute skill paths are left as-is."""
+        config_dict = self._base_config()
+        config_dict["skills"] = {"skill_paths": [str(tmp_path / "skills")]}
+
+        config = AppConfig.from_dict(config_dict, config_dir="/somewhere/else")
+
+        assert config.skill_paths == [(tmp_path / "skills").resolve()]
