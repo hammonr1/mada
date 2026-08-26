@@ -115,12 +115,6 @@ class AppConfig:
         """
         app_conf = {}
 
-        # Check skills configuration (optional)
-        if "skills" in config_dict:
-            raise ValueError(
-                "Top-level 'skills' is not supported. Use top-level 'skill_paths' for manifest-based skills."
-            )
-
         # Load model configuration
         model_settings = config_dict.get("model")
         if not model_settings:
@@ -168,25 +162,24 @@ class AppConfig:
             app_conf["mcp_servers"] = mcp_servers_cfg
 
         # Load skill paths (optional)
-        skill_paths_entry = config_dict.get("skill_paths")
+        skill_paths_entry, skill_runtime_entry = _get_skills_config_blocks(config_dict)
         if skill_paths_entry:
             if not isinstance(skill_paths_entry, list):
-                raise ValueError("'skill_paths' must be a list of paths.")
+                raise ValueError("'skills.skill_paths' must be a list of paths.")
             skill_paths = []
             for raw_path in skill_paths_entry:
                 if not isinstance(raw_path, str) or not raw_path.strip():
                     raise ValueError(
-                        "Each entry in 'skill_paths' must be a non-empty path."
+                        "Each entry in 'skills.skill_paths' must be a non-empty path."
                     )
                 skill_paths.append(raw_path.strip())
             app_conf["skill_paths"] = skill_paths
 
         # Load skill runtime configuration (optional)
-        skill_runtime_entry = config_dict.get("skill_runtime")
         if skill_runtime_entry:
             if not isinstance(skill_runtime_entry, dict):
                 raise ValueError(
-                    "'skill_runtime' must be a mapping of runtime settings."
+                    "'skills.skill_runtime' must be a mapping of runtime settings."
                 )
             app_conf["skill_runtime_config"] = SkillRuntimeConfig(**skill_runtime_entry)
 
@@ -223,6 +216,38 @@ def _resolve_skill_paths(skill_paths: List[str], config_file: str) -> List[Path]
         resolved_paths.append(skill_path.resolve())
 
     return resolved_paths
+
+
+def _get_skills_config_blocks(
+    config_dict: Dict[str, Any],
+) -> tuple[list[Any] | None, dict[str, Any] | None]:
+    """
+    Return skill discovery paths and runtime settings from nested config.
+
+    Args:
+        config_dict: Raw application configuration mapping.
+
+    Returns:
+        Tuple of the raw `skill_paths` list and `skill_runtime` mapping, each
+        None when not configured.
+
+    Raises:
+        ValueError: If the legacy top-level keys are used, or `skills` is not
+            an object.
+    """
+    if "skill_paths" in config_dict or "skill_runtime" in config_dict:
+        raise ValueError(
+            "Use 'skills.skill_paths' and 'skills.skill_runtime' for skills configuration"
+        )
+
+    skills_section = config_dict.get("skills")
+    if skills_section is None:
+        return None, None
+
+    if not isinstance(skills_section, dict):
+        raise ValueError("'skills' must be an object")
+
+    return skills_section.get("skill_paths"), skills_section.get("skill_runtime")
 
 
 def _get_a2a_config_blocks(

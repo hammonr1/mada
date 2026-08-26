@@ -25,17 +25,19 @@
       "instructions": "You are LocalCritiqueAgent, a rigorous reviewer. Identify flaws, risky assumptions, missing context, and concrete improvements."
     }
   ],
-  "skill_paths": [
-    "../skills"
-  ],
-  "skill_runtime": {
-    "default_script_timeout_seconds": 30,
-    "max_resource_bytes": 65536,
-    "max_script_output_bytes": 32768,
-    "default_skill_script_approval_mode": "prompt",
-    "skill_script_approval_modes": {
-      "documentation-helper": "approve",
-      "documentation-helper:scripts/publish.py": "deny"
+  "skills": {
+    "skill_paths": [
+      "../skills"
+    ],
+    "skill_runtime": {
+      "default_script_timeout_seconds": 30,
+      "max_resource_bytes": 65536,
+      "max_script_output_bytes": 32768,
+      "default_skill_script_approval_mode": "prompt",
+      "skill_script_approval_modes": {
+        "documentation-helper": "approve",
+        "documentation-helper:scripts/publish.py": "deny"
+      }
     }
   },
   "orchestration": {
