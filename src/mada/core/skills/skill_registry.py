@@ -206,35 +206,6 @@ class SkillRegistry:
         """Return compact 'name: description' summaries for prompt advertisement."""
         return [f"{skill.name}: {skill.description}" for skill in self.list_skills()]
 
-    @staticmethod
-    def _is_hidden_path(path: Path) -> bool:
-        """
-        Return True when any component of a path is hidden.
-
-        Args:
-            path: Relative path to inspect.
-
-        Returns:
-            True when any path component begins with a dot.
-        """
-        return any(part.startswith(".") for part in path.parts)
-
-    @classmethod
-    def _is_text_readable(cls, resource_path: Path, media_type: str) -> bool:
-        """
-        Return True when a resource can be read as text.
-
-        Args:
-            resource_path: Path to the resource file.
-            media_type: Guessed media type for the resource.
-
-        Returns:
-            True when the extension is a known text type or the media type is text.
-        """
-        if resource_path.suffix.lower() in cls.TEXT_RESOURCE_EXTENSIONS:
-            return True
-        return media_type.startswith("text/")
-
     @classmethod
     def _iter_skill_files(
         cls,
@@ -273,7 +244,7 @@ class SkillRegistry:
                 continue
 
             relative_path = candidate.relative_to(skill_root)
-            if cls._is_hidden_path(relative_path):
+            if any(part.startswith(".") for part in relative_path.parts):
                 continue
 
             yield candidate, relative_path.as_posix()
@@ -307,7 +278,10 @@ class SkillRegistry:
                     file_path=candidate.resolve(),
                     size_bytes=candidate.stat().st_size,
                     media_type=media_type,
-                    text_readable=cls._is_text_readable(candidate, media_type),
+                    text_readable=(
+                        candidate.suffix.lower() in cls.TEXT_RESOURCE_EXTENSIONS
+                        or media_type.startswith("text/")
+                    ),
                 )
 
         return resources
