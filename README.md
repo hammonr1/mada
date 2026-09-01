@@ -6,6 +6,11 @@ Multi-agent orchestration system for coordinating complex engineering workflows 
 
 MADA coordinates multiple specialized agents to execute complex engineering workflows. Each agent connects to MCP servers that provide domain-specific tools for simulation, geometry, job management, and inverse design.
 
+MADA supports two internal orchestration modes:
+
+- `agent-as-tool`: a planning agent delegates work to specialist agents exposed as tools
+- `magentic`: selected specialist agents participate in a peer group chat coordinated by a hidden manager
+
 
 ### Project Structure
 
@@ -13,11 +18,11 @@ MADA coordinates multiple specialized agents to execute complex engineering work
 mada/
 ├── src/mada/
 │   ├── core/                 # Core orchestration logic
-│   │   ├── config.py         # Configuration classes
+│   │   ├── config/           # Configuration classes
+│   │   ├── database/         # Chat history persistence
+│   │   ├── orchestration/    # Mode-specific orchestration strategies
 │   │   ├── coordinator.py    # Agent coordination base class
-│   │   ├── model_client.py   # LLM client factory
-│   │   ├── orchestrator.py   # Main multi-agent orchestrator
-│   │   └── utils.py          # Utility functions
+│   │   └── orchestrator.py   # Shared orchestrator runtime
 │   ├── interfaces/           # User interfaces
 │   │   ├── cli/              # Command-line interface
 │   │   │   └── main.py       # CLI implementation
@@ -39,7 +44,8 @@ mada/
 
 ### Core Components
 
-- **Orchestrator** (`src/mada/core/orchestrator.py`) - Main coordination engine
+- **Orchestrator** (`src/mada/core/orchestrator.py`) - Shared runtime for MCP connections, agent creation, session state, and persistence
+- **Orchestration strategies** (`src/mada/core/orchestration/`) - Mode-specific initialization and request processing
 - **Agents** - Specialized agents for different domains
 - **MCP Servers** - External tool providers
 - **Interfaces** - CLI, Gradio web, and OpenAI-compatible API interfaces
@@ -89,6 +95,13 @@ MADA uses a single JSON configuration file that defines all agents and their MCP
 - **MCP server endpoints**: Transport types, URLs, and descriptions
 - **Orchestration settings**: Timeouts, concurrency limits, coordination options
 - **Interface configuration**: UI titles, descriptions, and placeholders
+
+The orchestration block currently exposes:
+
+- `mode`: `agent-as-tool` or `magentic`
+- `participants`: optional ordered specialist subset for either mode
+
+`PlanningAgent` is never a participant. If present in your config, it customizes the visible planner in `agent-as-tool` mode and the hidden manager in `magentic` mode.
 
 See [`configs/mada_config.json`](configs/mada_config.json) for the complete configuration.
 
@@ -282,9 +295,19 @@ Use Safari.
 
 #### SSL certificate errors
 
-If you encounter SSL errors (which sometimes surface as an "Agent error") update your certificate bundle:
+MADA now prefers the system trust store for both MCP HTTP connections and
+OpenAI-compatible model endpoints. If your site uses a custom CA bundle that is
+not installed system-wide, point `SSL_CERT_FILE` (or `REQUESTS_CA_BUNDLE`) at
+that bundle before starting MADA:
 
+```bash
+export SSL_CERT_FILE=/path/to/ca-bundle.pem
 ```
+
+As a fallback on older environments, you can still update Python's `certifi`
+bundle manually:
+
+```bash
 python_cert_path=$(python -c "import certifi; print(certifi.where())")
 cat /etc/ssl/certs/ca-bundle.crt >> "$python_cert_path"
 ```
@@ -310,3 +333,5 @@ See [LICENSE](./LICENSE), [COPYRIGHT](./COPYRIGHT), and [NOTICE](./NOTICE) for d
 SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 LLNL-CODE-2019927
+
+https://doi.org/10.11578/dc.20260630.1
