@@ -165,14 +165,14 @@ class SkillRegistry:
     def has_resources_for_tool(self, tool_name: str = "read_skill_resource") -> bool:
         """Return True when at least one skill has resources and allows the tool."""
         return any(
-            is_tool_allowed(skill.allowed_tools, tool_name)
+            skill.resources and is_tool_allowed(skill.allowed_tools, tool_name)
             for skill in self._skills.values()
         )
 
     def has_scripts_for_tool(self, tool_name: str = "run_skill_script") -> bool:
         """Return True when at least one skill has scripts and allows the tool."""
         return any(
-            is_tool_allowed(skill.allowed_tools, tool_name)
+            skill.scripts and is_tool_allowed(skill.allowed_tools, tool_name)
             for skill in self._skills.values()
         )
 
