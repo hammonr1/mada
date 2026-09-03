@@ -490,7 +490,7 @@ If you are running MADA in [Gradio mode](./usage/gradio.md), you can customize t
 
 MADA can optionally discover manifest-based skills from directories that you provide in the configuration. A skill is a folder containing a `SKILL.md` file, along with optional `references/`, `assets/`, and `scripts/` subdirectories. This allows you to package reusable instructions and supporting files outside of the main agent configuration.
 
-Skills configuration lives under a single top-level `skills` key, which holds `skill_paths` and `skill_runtime`.
+Skills configuration lives under a single top-level `skills` key, which holds `skill_paths` and `skill_runtime`. Relative entries in `skill_paths` are resolved against the directory containing your configuration file.
 
 ### Fields
 
