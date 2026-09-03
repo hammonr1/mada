@@ -507,7 +507,7 @@ Skills configuration lives under a single top-level `skills` key, which holds `s
 | `max_resource_bytes`                 | Maximum size of a skill resource that may be read as text.  | No        | `32768`    |
 | `max_script_output_bytes`            | Maximum amount of stdout/stderr captured from a skill script. | No      | `32768`    |
 | `default_skill_script_approval_mode` | Approval mode applied when no override matches: `prompt`, `approve`, or `deny`. | No | `prompt` |
-| `skill_script_approval_modes`        | Per-skill and per-script approval overrides. See below.     | No        | `{}`       |
+| `skill_script_approval_modes`        | Per-skill and per-script approval overrides. [See below](#script-approval).     | No        | `{}`       |
 
 ### Script Approval
 

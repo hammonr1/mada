@@ -14,7 +14,6 @@ Modules:
         agent configuration and serialization helpers.
     app:
         Defines [`AppConfig`][core.config.app.AppConfig] and
-        [`SkillRuntimeConfig`][core.config.app.SkillRuntimeConfig], along with
         utilities for loading full application configuration from JSON.
     database:
         Defines database configuration models for SQLite and PostgreSQL, along
@@ -44,7 +43,7 @@ from mada.core.config.a2a import (
     load_a2a_config,
 )
 from mada.core.config.app import AppConfig, load_config_from_json
-from mada.core.config.skills import SkillRuntimeConfig
+from mada.core.config.skills import SkillRuntimeConfig, SkillsConfig
 from mada.core.config.database import (
     DatabaseConfig,
     PostgreSQLConfig,
@@ -82,6 +81,7 @@ __all__ = [
     "OrchestrationConfig",
     "PostgreSQLConfig",
     "SkillRuntimeConfig",
+    "SkillsConfig",
     "RemoteA2AAgentConfig",
     "DEFAULT_ORCHESTRATION_MODE",
     "SUPPORTED_ORCHESTRATION_MODES",

@@ -15,7 +15,7 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List
 from pathlib import Path
 
 from mada.core.config.agents import AgentConfig
@@ -34,7 +34,7 @@ from mada.core.config.orchestration import (
     load_orchestration_config,
 )
 from mada.core.config.skills import (
-    SkillRuntimeConfig,
+    SkillsConfig,
     load_skills_config,
 )
 
@@ -67,8 +67,7 @@ class AppConfig:
     database: DatabaseConfig
     mcp_servers: Dict[str, MCPServerConfig] = None  # MCP server configurations
     interface: InterfaceConfig = None  # Optional, used only by the Gradio app
-    skill_paths: List[Union[str, Path]] = field(default_factory=list)
-    skill_runtime_config: SkillRuntimeConfig = field(default_factory=SkillRuntimeConfig)
+    skills: SkillsConfig = field(default_factory=SkillsConfig)
     orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
     a2a: A2AConfig = field(default_factory=A2AConfig)
     a2a_agents: Dict[str, RemoteA2AAgentConfig] = field(default_factory=dict)
@@ -143,27 +142,14 @@ class AppConfig:
                 mcp_servers_cfg[name] = MCPServerConfig(**server_config)
             app_conf["mcp_servers"] = mcp_servers_cfg
 
-        # Load skill paths (optional)
-        if "skill_paths" in config_dict or "skill_runtime" in config_dict:
-            raise ValueError(
-                "Use 'skills.skill_paths' and 'skills.skill_runtime' for skills configuration"
-            )
-        skills_cfg = load_skills_config(
-            config_dict.get("skills"), config_dir=config_dir
-        )
-        app_conf["skill_paths"] = skills_cfg.skill_paths
-        app_conf["skill_runtime_config"] = skills_cfg.skill_runtime
-
         # Load skills configuration (optional)
         if "skill_paths" in config_dict or "skill_runtime" in config_dict:
             raise ValueError(
                 "Use 'skills.skill_paths' and 'skills.skill_runtime' for skills configuration"
             )
-        skills_cfg = load_skills_config(
+        app_conf["skills"] = load_skills_config(
             config_dict.get("skills"), config_dir=config_dir
         )
-        app_conf["skill_paths"] = skills_cfg.skill_paths
-        app_conf["skill_runtime_config"] = skills_cfg.skill_runtime
 
         # Load interface configuration (optional for multiagent app)
         interface_entry = config_dict.get("interface")

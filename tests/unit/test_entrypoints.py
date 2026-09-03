@@ -26,7 +26,7 @@ from mada.core.config import (
     MCPServerConfig,
     OpenAIModelConfig,
     OrchestrationConfig,
-    SkillRuntimeConfig,
+    SkillsConfig,
     SQLiteConfig,
 )
 from mada.core.orchestration.stream_events import (
@@ -84,9 +84,8 @@ class DummyConfig:
         self.agents = ["a1", "a2"]
         self.mcp_servers = {"s1": MCPServerConfig(transport="stdio")}
         self.database = database
-        self.skill_runtime_config = SkillRuntimeConfig()
+        self.skills = SkillsConfig()
         self.orchestration = OrchestrationConfig()
-        self.skill_paths = []
         self.a2a = A2AConfig()
         self.a2a_agents = {}
 

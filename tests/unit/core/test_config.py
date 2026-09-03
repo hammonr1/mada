@@ -340,9 +340,9 @@ class TestSkillsConfig:
         """Test that omitting the skills block yields empty defaults."""
         config = AppConfig.from_dict(self._base_config())
 
-        assert config.skill_paths == []
+        assert config.skills.skill_paths == []
         assert (
-            config.skill_runtime_config.default_skill_script_approval_mode == "prompt"
+            config.skills.skill_runtime.default_skill_script_approval_mode == "prompt"
         )
 
     def test_skills_block_is_parsed(self, tmp_path: Path):
@@ -359,10 +359,10 @@ class TestSkillsConfig:
 
         config = AppConfig.from_dict(config_dict, config_dir=tmp_path)
 
-        assert config.skill_paths == [(tmp_path / "skills").resolve()]
-        assert config.skill_runtime_config.default_script_timeout_seconds == 60
-        assert config.skill_runtime_config.default_skill_script_approval_mode == "deny"
-        assert config.skill_runtime_config.skill_script_approval_modes == {
+        assert config.skills.skill_paths == [(tmp_path / "skills").resolve()]
+        assert config.skills.skill_runtime.default_script_timeout_seconds == 60
+        assert config.skills.skill_runtime.default_skill_script_approval_mode == "deny"
+        assert config.skills.skill_runtime.skill_script_approval_modes == {
             "demo-skill": "approve"
         }
 
@@ -407,7 +407,7 @@ class TestSkillsConfig:
 
         config = AppConfig.from_dict(config_dict, config_dir=tmp_path)
 
-        assert config.skill_paths == [
+        assert config.skills.skill_paths == [
             (tmp_path / "skills").resolve(),
             (tmp_path.parent / "shared-skills").resolve(),
         ]
@@ -419,4 +419,4 @@ class TestSkillsConfig:
 
         config = AppConfig.from_dict(config_dict, config_dir="/somewhere/else")
 
-        assert config.skill_paths == [(tmp_path / "skills").resolve()]
+        assert config.skills.skill_paths == [(tmp_path / "skills").resolve()]

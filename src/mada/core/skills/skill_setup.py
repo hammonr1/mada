@@ -30,19 +30,21 @@ def initialize_skill_state(config: AppConfig) -> Tuple[SkillRegistry, List[Any]]
     Discover manifest-based skills and build their runtime tools.
 
     Args:
-        config: Application configuration containing resolved `skill_paths`
-            and skill runtime settings.
+        config: Application configuration containing the resolved skills
 
     Returns:
         Tuple containing the populated skill registry and the list of runtime
         tools to expose to the planner.
     """
-    LOG.debug(f"Initializing skills from {len(config.skill_paths)} configured path(s)")
-    skill_registry = SkillRegistry.discover(config.skill_paths)
+    skills_config = config.skills
+    LOG.debug(
+        f"Initializing skills from {len(skills_config.skill_paths)} configured path(s)"
+    )
+    skill_registry = SkillRegistry.discover(skills_config.skill_paths)
     skill_runtime = SkillRuntime(
         skill_registry,
-        config=config.skill_runtime_config,
-        script_approver=build_skill_script_approver(config.skill_runtime_config),
+        config=skills_config.skill_runtime,
+        script_approver=build_skill_script_approver(skills_config.skill_runtime),
     )
 
     skill_tools = []
