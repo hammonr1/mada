@@ -149,10 +149,7 @@ class SkillRegistry:
 
     def has_skills_for_tool(self, tool_name: str = "load_skill") -> bool:
         """Return True when at least one discovered skill allows the tool."""
-        return any(
-            is_tool_allowed(skill.allowed_tools, tool_name)
-            for skill in self._skills.values()
-        )
+        return self._has_tool_for_content(tool_name, content_attr=None)
 
     def has_resources(self) -> bool:
         """Return True when at least one discovered skill has indexed resources."""
@@ -164,17 +161,11 @@ class SkillRegistry:
 
     def has_resources_for_tool(self, tool_name: str = "read_skill_resource") -> bool:
         """Return True when at least one skill has resources and allows the tool."""
-        return any(
-            skill.resources and is_tool_allowed(skill.allowed_tools, tool_name)
-            for skill in self._skills.values()
-        )
+        return self._has_tool_for_content(tool_name, content_attr="resources")
 
     def has_scripts_for_tool(self, tool_name: str = "run_skill_script") -> bool:
         """Return True when at least one skill has scripts and allows the tool."""
-        return any(
-            skill.scripts and is_tool_allowed(skill.allowed_tools, tool_name)
-            for skill in self._skills.values()
-        )
+        return self._has_tool_for_content(tool_name, content_attr="scripts")
 
     def get_resource(
         self, skill_name: str, resource_path: str
@@ -205,6 +196,25 @@ class SkillRegistry:
     def skill_summaries(self) -> List[str]:
         """Return compact 'name: description' summaries for prompt advertisement."""
         return [f"{skill.name}: {skill.description}" for skill in self.list_skills()]
+
+    def _has_tool_for_content(self, tool_name: str, content_attr: str | None) -> bool:
+        """
+        Return True when at least one skill has the given content and allows the tool.
+
+        Args:
+            tool_name: Runtime tool name to check.
+            content_attr: Attribute name on `DiscoveredSkill` that must be
+                truthy, such as "resources" or "scripts". None skips the
+                content check entirely.
+
+        Returns:
+            True when at least one skill satisfies both conditions.
+        """
+        return any(
+            (content_attr is None or getattr(skill, content_attr))
+            and is_tool_allowed(skill.allowed_tools, tool_name)
+            for skill in self._skills.values()
+        )
 
     @classmethod
     def _iter_skill_files(

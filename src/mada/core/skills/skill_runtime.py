@@ -119,8 +119,7 @@ class SkillRuntime:
                 "script_name": normalized_name,
                 "approved": False,
                 "executed": False,
-                "approval_reason": reason,
-                "reason": reason,
+                "outcome": reason,
             }
 
         self._validate_script(skill.root_path, script)
@@ -144,8 +143,7 @@ class SkillRuntime:
                 "script_name": normalized_name,
                 "approved": False,
                 "executed": False,
-                "approval_reason": decision.reason,
-                "reason": decision.reason,
+                "outcome": decision.reason,
             }
 
         return self._execute_script(
@@ -153,7 +151,6 @@ class SkillRuntime:
             skill_root=skill.root_path,
             script=script,
             normalized_args=normalized_args,
-            approval_reason=decision.reason,
         )
 
     def _normalize_resource_path(self, resource_path: str) -> str:
@@ -273,7 +270,6 @@ class SkillRuntime:
         skill_root: Path,
         script: DiscoveredSkillScript,
         normalized_args: list[str],
-        approval_reason: str,
     ) -> dict[str, Any]:
         command = self._build_script_command(script, normalized_args)
         timeout_seconds = self.config.default_script_timeout_seconds
@@ -311,8 +307,7 @@ class SkillRuntime:
                 "stderr": stderr,
                 "stdout_truncated": stdout_truncated,
                 "stderr_truncated": stderr_truncated,
-                "approval_reason": approval_reason,
-                "reason": f"Skill script timed out after {timeout_seconds} seconds.",
+                "outcome": f"Skill script timed out after {timeout_seconds} seconds.",
             }
 
         stdout, stdout_truncated = self._truncate_output(completed.stdout)
@@ -331,18 +326,17 @@ class SkillRuntime:
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
             "exit_code": completed.returncode,
-            "approval_reason": approval_reason,
         }
 
         if completed.returncode == 0:
             result["status"] = "success"
-            result["reason"] = "Skill script completed successfully."
+            result["outcome"] = "Skill script completed successfully."
             return result
         LOG.warning(
             f"Skill script '{script.path}' exited with status {completed.returncode}"
         )
         result["status"] = "nonzero_exit"
-        result["reason"] = (
+        result["outcome"] = (
             f"Skill script exited with non-zero status {completed.returncode}."
         )
         return result
