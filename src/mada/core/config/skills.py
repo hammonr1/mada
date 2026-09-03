@@ -48,20 +48,20 @@ class SkillsConfig:
     Attributes:
         skill_paths: Directories searched recursively for skill folders
             containing `SKILL.md`. Entries are normalized to absolute `Path`
-            objects, resolved against `config_dir` when relative.
+            objects, resolved against `skill_path_base_dir` when relative.
         skill_runtime: Runtime limits and script approval policy.
     """
 
     skill_paths: List[Path] = field(default_factory=list)
     skill_runtime: SkillRuntimeConfig = field(default_factory=SkillRuntimeConfig)
-    config_dir: InitVar[str | Path | None] = None
+    skill_path_base_dir: InitVar[str | Path | None] = None
 
-    def __post_init__(self, config_dir: str | Path | None) -> None:
+    def __post_init__(self, skill_path_base_dir: str | Path | None) -> None:
         """
         Validate skill paths and normalize them to absolute `Path` objects.
 
         Args:
-            config_dir: Directory used to resolve relative skill paths. When
+            skill_path_base_dir: Directory used to resolve relative skill paths. When
                 omitted, relative paths are resolved against the process
                 working directory.
 
@@ -72,7 +72,9 @@ class SkillsConfig:
         if not isinstance(self.skill_paths, list):
             raise ValueError("'skills.skill_paths' must be a list of paths.")
 
-        base_dir = Path(config_dir).resolve() if config_dir else Path.cwd()
+        base_dir = (
+            Path(skill_path_base_dir).resolve() if skill_path_base_dir else Path.cwd()
+        )
         resolved_paths: List[Path] = []
 
         for raw_path in self.skill_paths:
@@ -95,14 +97,14 @@ class SkillsConfig:
 
 def load_skills_config(
     skills_block: Dict[str, Any] | None,
-    config_dir: str | Path | None = None,
+    skill_path_base_dir: str | Path | None = None,
 ) -> SkillsConfig:
     """
     Build a `SkillsConfig` from the nested `skills` configuration block.
 
     Args:
         skills_block: Raw `skills` mapping, or None when not configured.
-        config_dir: Directory used to resolve relative skill paths.
+        skill_path_base_dir: Directory used to resolve relative skill paths.
 
     Returns:
         A validated skills configuration.
@@ -111,7 +113,7 @@ def load_skills_config(
         ValueError: If the block or its `skill_runtime` entry is not a mapping.
     """
     if skills_block is None:
-        return SkillsConfig(config_dir=config_dir)
+        return SkillsConfig(skill_path_base_dir=skill_path_base_dir)
 
     if not isinstance(skills_block, dict):
         raise ValueError("'skills' must be an object")
@@ -129,5 +131,5 @@ def load_skills_config(
     return SkillsConfig(
         skill_paths=skills_block.get("skill_paths") or [],
         skill_runtime=runtime_config,
-        config_dir=config_dir,
+        skill_path_base_dir=skill_path_base_dir,
     )
